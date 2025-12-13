@@ -1,0 +1,59 @@
+Port-to-Rail Surge Forecaster & Utilization Optimizer
+
+1. Overview
+This challenge focuses on building a forecasting and optimization system for the U.S. multimodal freight pipeline, specifically the flow from port → truck → rail terminals.
+Teams must use real-world logistics datasets to detect surges, predict congestion, and recommend ideal rail dispatch windows within a 24–72 hour horizon.
+2. Core Datasets (Required)
+2a. PortWatch – Daily Port Activity (IMF)
+Metrics: vessel arrivals, departures, cargo volumes, time-in-port
+Purpose: detect port congestion and forecast inbound surges
+Dataset: https://portwatch.imf.org/pages/data-and-methodology
+2b. North American Rail Network (USDOT/FRA)
+Components: rail nodes, intermodal terminals, rail line segments
+Purpose: identify chokepoints, simulate routing, and model rail terminal utilization
+Dataset:
+Rail Lines: https://geodata.bts.gov/datasets/usdot::north-american-rail-network-lines/about 
+Rail Nodes: https://data-usdot.opendata.arcgis.com/datasets/usdot::north-american-rail-network-nodes/about 
+2c. County-to-County Truck Travel Times (BTS/ATRI)
+Metrics: median and percentile drayage travel times
+Purpose: detect first-mile cycle-time stress and road-induced delays
+Dataset: https://rosap.ntl.bts.gov/view/dot/85073 
+2d. Logistics Fleet Data (Kaggle)
+Metrics: vehicle-level freight, cost, operational characteristics
+Purpose: model drayage pressure and analyze fleet-level behavior and delays
+Dataset: https://www.kaggle.com/datasets/syednaveed05/logistics-fleet-data/data 
+3. Optional Enrichment Datasets
+Teams may include up to two optional datasets (maximum of six total).
+Global Daily Port Activity (Kaggle) (DONE)
+
+For benchmarking U.S. port performance against global trade activity.
+AIS Vessel Tracking Data (NOAA or Kaggle) (DONE)
+
+For predicting vessel ETAs and anticipating port surges based on inbound vessel flows.
+Weather Data APIs (Open-Meteo or Visual Crossing) (DONE)
+
+For predicting weather-driven delays affecting port operations, trucking, and rail.
+4. Insight Goal
+Teams must generate actionable insights, including:
+24–72 hour port surge predictions
+Early warnings for rail congestion or rail underutilization
+First-mile drayage delay forecasting
+Ideal time windows for rail dispatch
+Recommended repositioning routes between nearby rail terminals
+Unified real-time visualization of freight flow from port to truck to rail
+5. Build Objective
+Teams must produce a functioning system that:
+Integrates port, truck, and rail datasets
+Forecasts congestion and inbound surges
+Identifies rail nodes that are likely to face chokepoints
+Recommends optimal rail movement time windows
+Flags anomalies across port, road, or rail network activity
+Presents a clear dashboard illustrating multimodal flow dynamics
+6. Expected Deliverables
+A forecasting model (24–72 hour prediction window)
+An optimization engine for rail utilization and scheduling
+A real-time or simulated dashboard
+Visualizations of port → truck → rail activity
+Clear interpretability or narrative explaining model outputs
+7. Summary
+Participants will build an integrated system combining forecasting, anomaly detection, and logistics optimization. The goal is to improve freight velocity and reduce congestion across U.S. multimodal networks by intelligently coordinating port activity, trucking flows, and rail terminal utilization.
