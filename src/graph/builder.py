@@ -307,3 +307,8 @@ if __name__ == "__main__":
     subgraph = extract_subgraph_radius(G, woodland['lat'], woodland['lon'], 50)
     print(f"\nWoodland 50-mile subgraph: {subgraph.number_of_nodes()} nodes")
 
+
+
+
+
+

@@ -1,0 +1,83 @@
+# =============================================================================
+# Docker Compose for Glid Surge Optimization
+# GNN Training with PyTorch Geometric + RAPIDS on NVIDIA Grace Blackwell
+# =============================================================================
+#
+# Usage:
+#   docker compose up gnn-train      # Run GNN training
+#   docker compose run gnn-shell     # Interactive shell
+#   docker compose up dashboard      # Start dashboard
+# =============================================================================
+
+services:
+  # Main GNN training service
+  gnn-train:
+    build:
+      context: .
+      dockerfile: Dockerfile.gnn-v2
+    image: glid-gnn-v2:latest
+    container_name: glid-gnn-v2-train
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
+      - PROJ_LIB=/opt/conda/share/proj
+    volumes:
+      - .:/workspace
+      - ./data:/workspace/data:ro
+      - ./output:/workspace/output
+    working_dir: /workspace
+    command: python -m src.forecasting.gnn_model --mode real --horizon-hours 24 --max-ports 5 --epochs 30
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Interactive development shell
+  gnn-shell:
+    build:
+      context: .
+      dockerfile: Dockerfile.gnn-v2
+    image: glid-gnn-v2:latest
+    container_name: glid-gnn-v2-shell
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    command: /bin/bash
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Use pre-built RAPIDS container directly (faster, no build needed)
+  rapids-quick:
+    image: rapidsai/base:25.12-cuda13-py3.12-arm64
+    container_name: glid-rapids-quick
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    command: /bin/bash
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+

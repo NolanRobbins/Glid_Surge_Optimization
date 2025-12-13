@@ -1,0 +1,38 @@
+# =============================================================================
+# GNN Training Container for NVIDIA Grace Blackwell (GX10) - Version 2
+# =============================================================================
+# Base: RAPIDS 25.12 with CUDA 13 (Blackwell support!)
+# Adds: PyTorch 2.9.1 + cu130 + PyTorch Geometric
+#
+# Build: docker build -f Dockerfile.gnn-v2 -t glid-gnn-v2:latest .
+# Run:   docker run --gpus all -v $(pwd):/workspace -it glid-gnn-v2:latest
+# =============================================================================
+
+FROM rapidsai/base:25.12-cuda13-py3.12-arm64
+
+# Set working directory
+WORKDIR /workspace
+
+# Switch to root for installations
+USER root
+
+# Install PyTorch with CUDA 13.0 (Blackwell sm_121 support)
+# NOTE: RAPIDS base already ships cuDF/cuML/cuGraph/CuPy/etc.
+RUN pip install --no-cache-dir \
+    torch torchvision torchaudio \
+    --index-url https://download.pytorch.org/whl/cu130
+
+# Install PyTorch Geometric (v2.7+ has native scatter - no torch-scatter needed)
+RUN pip install --no-cache-dir torch-geometric
+
+# Small extras used by this repo that may not be present in the base image
+RUN pip install --no-cache-dir openpyxl geopy
+
+# Set environment variables
+ENV CUDA_HOME=/usr/local/cuda
+ENV PYTHONPATH=/workspace/src
+ENV PROJ_LIB=/opt/conda/share/proj
+
+# Default command (graph training)
+CMD ["python", "-m", "src.forecasting.gnn_model"]
+

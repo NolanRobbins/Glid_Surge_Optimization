@@ -1,2 +1,20 @@
+## Large datasets (keep out of git)
 data/
+
+## Outputs / artifacts (often large, usually reproducible)
+output/
+models/checkpoints/
+*.pkl
+*.pt
+*.ckpt
+*.joblib
+*.onnx
+
+## Python caches
+__pycache__/
+*.py[cod]
+
+## Virtual environments / local tooling
 .venv/
+.vscode/
+.env

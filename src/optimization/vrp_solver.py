@@ -316,3 +316,8 @@ if __name__ == "__main__":
     for i, route in enumerate(solution.routes):
         print(f"    Vehicle {i+1}: {' -> '.join(map(str, route))}")
 
+
+
+
+
+

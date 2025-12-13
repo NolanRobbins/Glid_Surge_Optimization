@@ -251,3 +251,8 @@ if __name__ == "__main__":
         for note in window.notes:
             print(f"    {note}")
 
+
+
+
+
+

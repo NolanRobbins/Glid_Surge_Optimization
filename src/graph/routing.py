@@ -267,3 +267,8 @@ if __name__ == "__main__":
     print(f"Time: {route.total_time_hours} hours")
     print(f"Valid: {route.is_valid}, Violations: {route.violations}")
 
+
+
+
+
+
