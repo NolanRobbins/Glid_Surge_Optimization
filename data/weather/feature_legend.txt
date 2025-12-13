@@ -1,0 +1,230 @@
+================================================================================
+WEATHER DATA FEATURE LEGEND
+Port-to-Rail Surge Forecaster Project
+================================================================================
+Source: Open-Meteo GFS API (https://open-meteo.com/en/docs/gfs-api)
+Downloaded: 2025-12-12
+Coverage: 52 US Logistics Hubs (15 ports + 37 rail terminals)
+================================================================================
+
+================================================================================
+HOURLY DATA (weather_hourly_YYYYMMDD.csv)
+================================================================================
+
+METADATA COLUMNS
+--------------------------------------------------------------------------------
+timestamp           | ISO 8601 datetime (e.g., 2025-12-12T14:00)
+location_name       | Name of logistics hub (e.g., "Port of Los Angeles")
+location_type       | "port" or "rail"
+latitude            | WGS84 latitude (decimal degrees)
+longitude           | WGS84 longitude (decimal degrees)
+elevation_m         | Elevation in meters above sea level
+
+TEMPERATURE VARIABLES
+--------------------------------------------------------------------------------
+temperature_2m      | Air temperature at 2m above ground (°F)
+                    | Freight Impact: Extreme cold (<-10°F) causes diesel gelling,
+                    |                 brake issues. Extreme heat (>95°F) causes
+                    |                 rail track buckling, tire blowouts.
+
+apparent_temperature| "Feels like" temperature accounting for wind/humidity (°F)
+                    | Freight Impact: Worker safety, outdoor loading operations
+
+PRECIPITATION VARIABLES
+--------------------------------------------------------------------------------
+precipitation       | Total precipitation: rain + snow + showers (inches)
+                    | Freight Impact: >1 in/hr = high flooding risk, road closures
+
+rain                | Rainfall amount (inches)
+                    | Freight Impact: Hydroplaning, reduced visibility, delays
+
+snowfall            | Snowfall amount (inches)
+                    | Freight Impact: >2 in/hr = road closures likely,
+                    |                 chain requirements, speed reductions
+
+snow_depth          | Current snow depth on ground (inches)
+                    | Freight Impact: Accumulated snow affects road conditions
+
+precipitation_probability | Probability of precipitation (0-100%)
+                    | Freight Impact: Useful for 24-72hr delay forecasting
+
+WIND VARIABLES
+--------------------------------------------------------------------------------
+wind_speed_10m      | Wind speed at 10m height (mph)
+                    | Freight Impact: >35 mph = port crane shutdowns
+                    |                 >50 mph = truck restrictions, bridge closures
+
+wind_gusts_10m      | Maximum wind gusts (mph)
+                    | Freight Impact: Sudden gusts >50 mph can topple empty
+                    |                 trailers, cause accidents
+
+VISIBILITY VARIABLES
+--------------------------------------------------------------------------------
+visibility          | Horizontal visibility (feet)
+                    | Freight Impact: <1000m = speed restrictions
+                    |                 <200m = potential road/port closures
+                    | Note: API returns meters, converted to feet in some contexts
+
+cloud_cover         | Total cloud cover (0-100%)
+                    | Freight Impact: Affects solar heating of rail tracks
+
+ATMOSPHERIC VARIABLES
+--------------------------------------------------------------------------------
+weather_code        | WMO Weather Code (numeric)
+                    | See WMO WEATHER CODES section below
+                    | Freight Impact: Identifies severe weather conditions
+
+freezing_level_height| Altitude where temp crosses 32°F (feet above sea level)
+                    | Freight Impact: Lower levels = freezing rain risk at surface
+
+surface_pressure    | Atmospheric pressure at surface (hPa)
+                    | Freight Impact: Rapid drops indicate approaching storms
+
+is_day              | Daytime indicator (1 = day, 0 = night)
+                    | Freight Impact: Night operations have different constraints
+
+================================================================================
+DAILY DATA (weather_daily_YYYYMMDD.csv)
+================================================================================
+
+METADATA COLUMNS
+--------------------------------------------------------------------------------
+date                | Date (YYYY-MM-DD format)
+location_name       | Name of logistics hub
+location_type       | "port" or "rail"
+latitude            | WGS84 latitude
+longitude           | WGS84 longitude
+elevation_m         | Elevation in meters
+
+TEMPERATURE VARIABLES
+--------------------------------------------------------------------------------
+temperature_2m_max  | Maximum daily temperature (°F)
+temperature_2m_min  | Minimum daily temperature (°F)
+apparent_temperature_max | Maximum "feels like" temperature (°F)
+apparent_temperature_min | Minimum "feels like" temperature (°F)
+
+PRECIPITATION VARIABLES
+--------------------------------------------------------------------------------
+precipitation_sum   | Total daily precipitation (inches)
+rain_sum            | Total daily rainfall (inches)
+snowfall_sum        | Total daily snowfall (inches)
+precipitation_hours | Hours with measurable precipitation
+precipitation_probability_max | Maximum precipitation probability for the day (%)
+
+WIND VARIABLES
+--------------------------------------------------------------------------------
+wind_speed_10m_max  | Maximum daily wind speed (mph)
+wind_gusts_10m_max  | Maximum daily wind gusts (mph)
+wind_direction_10m_dominant | Dominant wind direction (degrees, 0=N, 90=E, etc.)
+
+DAYLIGHT VARIABLES
+--------------------------------------------------------------------------------
+weather_code        | Dominant WMO weather code for the day
+sunrise             | Sunrise time (ISO 8601)
+sunset              | Sunset time (ISO 8601)
+
+================================================================================
+WMO WEATHER CODES (weather_code field)
+================================================================================
+
+CLEAR/CLOUDY (Low Impact)
+--------------------------------------------------------------------------------
+0   | Clear sky
+1   | Mainly clear
+2   | Partly cloudy
+3   | Overcast
+
+FOG (Medium-High Impact on Visibility)
+--------------------------------------------------------------------------------
+45  | Fog
+48  | Depositing rime fog (freezing fog)
+
+DRIZZLE (Low-Medium Impact)
+--------------------------------------------------------------------------------
+51  | Light drizzle
+53  | Moderate drizzle
+55  | Dense drizzle
+56  | Light freezing drizzle          ⚠️ FREEZING
+57  | Dense freezing drizzle          ⚠️ FREEZING
+
+RAIN (Medium-High Impact)
+--------------------------------------------------------------------------------
+61  | Slight rain
+63  | Moderate rain
+65  | Heavy rain                      ⚠️ HIGH IMPACT
+66  | Light freezing rain             ⚠️ FREEZING - CRITICAL
+67  | Heavy freezing rain             ⚠️ FREEZING - CRITICAL
+
+SNOW (High Impact)
+--------------------------------------------------------------------------------
+71  | Slight snow fall
+73  | Moderate snow fall              ⚠️ HIGH IMPACT
+75  | Heavy snow fall                 ⚠️ CRITICAL
+77  | Snow grains
+
+SHOWERS (Variable Impact)
+--------------------------------------------------------------------------------
+80  | Slight rain showers
+81  | Moderate rain showers
+82  | Violent rain showers            ⚠️ HIGH IMPACT
+85  | Slight snow showers
+86  | Heavy snow showers              ⚠️ HIGH IMPACT
+
+THUNDERSTORMS (Critical Impact)
+--------------------------------------------------------------------------------
+95  | Thunderstorm                    ⚠️ CRITICAL - Port shutdowns
+96  | Thunderstorm with slight hail   ⚠️ CRITICAL
+99  | Thunderstorm with heavy hail    ⚠️ CRITICAL
+
+================================================================================
+FREIGHT DELAY THRESHOLDS (Recommended)
+================================================================================
+
+CONDITION               | THRESHOLD           | EXPECTED IMPACT
+--------------------------------------------------------------------------------
+Wind Gusts              | > 35 mph            | Port crane shutdowns
+Wind Gusts              | > 50 mph            | Truck restrictions, bridge closures
+Visibility              | < 3,280 ft (1 km)   | Speed restrictions
+Visibility              | < 656 ft (200 m)    | Potential closures
+Snowfall Rate           | > 2 in/hr           | Road closures likely
+Precipitation Rate      | > 1 in/hr           | Flooding risk
+Temperature             | > 95°F              | Rail speed restrictions (sun kinks)
+Temperature             | < -10°F             | Equipment issues (diesel, brakes)
+Weather Code            | 66, 67              | Freezing rain - CRITICAL
+Weather Code            | 75, 86              | Heavy snow - CRITICAL
+Weather Code            | 95, 96, 99          | Thunderstorms - Port shutdown
+
+================================================================================
+UNITS SUMMARY
+================================================================================
+
+Variable                | Unit
+--------------------------------------------------------------------------------
+Temperature             | Fahrenheit (°F)
+Wind Speed              | Miles per hour (mph)
+Precipitation           | Inches (in)
+Visibility              | Feet (ft) - Note: API may return meters
+Pressure                | Hectopascals (hPa)
+Cloud Cover             | Percent (%)
+Probability             | Percent (%)
+Elevation               | Meters (m)
+Wind Direction          | Degrees (0-360°, 0=N, 90=E, 180=S, 270=W)
+
+================================================================================
+DATA REFRESH
+================================================================================
+
+To download fresh weather data:
+
+    cd data/weather/
+    python3 download_weather_data.py
+
+This will create new files with the current date stamp.
+
+================================================================================
+
+
+
+
+
+

@@ -1,0 +1,214 @@
+{
+  "routes": [
+    {
+      "id": "1",
+      "containerNumber": "ABCD1234567",
+      "shipmentDate": "2024-01-15T00:00:00.000Z",
+      "originPort": "Warehouse A",
+      "storageFacility": "Distribution Center",
+      "destinationPort": "Distribution Center",
+      "status": "in_transit",
+      "estimatedDelivery": "2024-02-20T00:00:00.000Z",
+      "vehicleType": "raden",
+      "containerWeight": 18.5,
+      "pickupTime": "2024-01-15T08:30:00.000Z",
+      "dropoffTime": "2024-01-15T10:15:00.000Z",
+      "estimatedPickupTime": "2024-01-15T08:30:00.000Z",
+      "estimatedDropoffTime": "2024-01-15T10:15:00.000Z",
+      "route": {
+        "origin": {
+          "type": "port",
+          "id": "warehouse-a",
+          "coordinates": [-95.2000, 37.3400],
+          "name": "Warehouse A"
+        },
+        "destination": {
+          "type": "port",
+          "id": "distribution-center",
+          "coordinates": [-95.1950, 37.3450],
+          "name": "Distribution Center"
+        },
+        "coordinates": [
+          [-95.2000, 37.3400],
+          [-95.1950, 37.3450]
+        ]
+      },
+      "competitorRoute": {
+        "origin": {
+          "type": "port",
+          "id": "warehouse-a",
+          "coordinates": [-95.2000, 37.3400],
+          "name": "Warehouse A"
+        },
+        "destination": {
+          "type": "port",
+          "id": "distribution-center",
+          "coordinates": [-95.1950, 37.3450],
+          "name": "Distribution Center"
+        },
+        "coordinates": [
+          [-95.2000, 37.3400],
+          [-95.1980, 37.3420],
+          [-95.1960, 37.3440],
+          [-95.1950, 37.3450]
+        ]
+      }
+    },
+    {
+      "id": "2",
+      "containerNumber": "EFGH8901234",
+      "shipmentDate": "2024-01-20T00:00:00.000Z",
+      "originPort": "Warehouse B",
+      "storageFacility": "Loading Dock",
+      "destinationPort": "Loading Dock",
+      "status": "scheduled",
+      "estimatedDelivery": "2024-02-25T00:00:00.000Z",
+      "vehicleType": "gliderm",
+      "containerWeight": 12.3,
+      "route": {
+        "origin": {
+          "type": "port",
+          "id": "warehouse-b",
+          "coordinates": [-95.1900, 37.3350],
+          "name": "Warehouse B"
+        },
+        "destination": {
+          "type": "port",
+          "id": "loading-dock",
+          "coordinates": [-95.1880, 37.3380],
+          "name": "Loading Dock"
+        },
+        "coordinates": [
+          [-95.1900, 37.3350],
+          [-95.1880, 37.3380]
+        ]
+      }
+    },
+    {
+      "id": "3",
+      "containerNumber": "IJKL5678901",
+      "shipmentDate": "2024-01-10T00:00:00.000Z",
+      "originPort": "Warehouse C",
+      "storageFacility": "Warehouse A",
+      "destinationPort": "Warehouse A",
+      "status": "completed",
+      "estimatedDelivery": "2024-01-18T00:00:00.000Z",
+      "vehicleType": "raden",
+      "containerWeight": 22.1,
+      "pickupTime": "2024-01-10T07:00:00.000Z",
+      "dropoffTime": "2024-01-10T08:45:00.000Z",
+      "estimatedPickupTime": "2024-01-10T07:00:00.000Z",
+      "estimatedDropoffTime": "2024-01-10T08:45:00.000Z",
+      "route": {
+        "origin": {
+          "type": "port",
+          "id": "warehouse-c",
+          "coordinates": [-95.1850, 37.3300],
+          "name": "Warehouse C"
+        },
+        "destination": {
+          "type": "port",
+          "id": "warehouse-a",
+          "coordinates": [-95.2000, 37.3400],
+          "name": "Warehouse A"
+        },
+        "coordinates": [
+          [-95.1850, 37.3300],
+          [-95.2000, 37.3400]
+        ]
+      },
+      "competitorRoute": {
+        "origin": {
+          "type": "port",
+          "id": "warehouse-c",
+          "coordinates": [-95.1850, 37.3300],
+          "name": "Warehouse C"
+        },
+        "destination": {
+          "type": "port",
+          "id": "warehouse-a",
+          "coordinates": [-95.2000, 37.3400],
+          "name": "Warehouse A"
+        },
+        "coordinates": [
+          [-95.1850, 37.3300],
+          [-95.1900, 37.3330],
+          [-95.1950, 37.3365],
+          [-95.2000, 37.3400]
+        ]
+      }
+    },
+    {
+      "id": "4",
+      "containerNumber": "MNOP2345678",
+      "shipmentDate": "2024-01-25T00:00:00.000Z",
+      "originPort": "Distribution Center",
+      "storageFacility": "Warehouse B",
+      "destinationPort": "Warehouse B",
+      "status": "scheduled",
+      "estimatedDelivery": "2024-03-01T00:00:00.000Z",
+      "vehicleType": "raden",
+      "containerWeight": 15.8
+    },
+    {
+      "id": "5",
+      "containerNumber": "QRST3456789",
+      "shipmentDate": "2024-01-22T00:00:00.000Z",
+      "originPort": "Loading Dock",
+      "storageFacility": "Warehouse C",
+      "destinationPort": "Warehouse C",
+      "status": "in_transit",
+      "estimatedDelivery": "2024-02-27T00:00:00.000Z",
+      "vehicleType": "gliderm",
+      "containerWeight": 10.5,
+      "pickupTime": "2024-01-22T11:30:00.000Z",
+      "dropoffTime": "2024-01-22T12:45:00.000Z",
+      "estimatedPickupTime": "2024-01-22T11:30:00.000Z",
+      "estimatedDropoffTime": "2024-01-22T12:45:00.000Z"
+    }
+  ],
+  "routePoints": {
+    "long-beach-port": {
+      "type": "port",
+      "id": "long-beach-port",
+      "coordinates": [-118.216458, 33.754185],
+      "name": "Port of Long Beach"
+    },
+    "fleet-yards-damco": {
+      "type": "destination",
+      "id": "fleet-yards-damco",
+      "coordinates": [-118.2200, 33.8190],
+      "name": "Fleet Yards Inc./DAMCO DISTRIBUTION INC"
+    },
+    "warehouse-a": {
+      "type": "port",
+      "id": "warehouse-a",
+      "coordinates": [-95.2000, 37.3400],
+      "name": "Warehouse A"
+    },
+    "warehouse-b": {
+      "type": "port",
+      "id": "warehouse-b",
+      "coordinates": [-95.1900, 37.3350],
+      "name": "Warehouse B"
+    },
+    "warehouse-c": {
+      "type": "port",
+      "id": "warehouse-c",
+      "coordinates": [-95.1850, 37.3300],
+      "name": "Warehouse C"
+    },
+    "distribution-center": {
+      "type": "port",
+      "id": "distribution-center",
+      "coordinates": [-95.1950, 37.3450],
+      "name": "Distribution Center"
+    },
+    "loading-dock": {
+      "type": "port",
+      "id": "loading-dock",
+      "coordinates": [-95.1880, 37.3380],
+      "name": "Loading Dock"
+    }
+  }
+}

@@ -1,5 +1,14 @@
 ## Large datasets (keep out of git)
-data/
+# Keep small synthetic/demo files (e.g. data/syntheticCustomerRoutes.json) in git,
+# but ignore the real/large datasets.
+data/AIS_vessel/
+data/global_daily_port_activity/
+data/logistics_fleet/
+data/portwatch/
+data/rail_lines/
+data/rail_nodes/
+data/truck_times/
+data/weather/*.csv
 
 ## Outputs / artifacts (often large, usually reproducible)
 output/
@@ -18,3 +27,38 @@ __pycache__/
 .venv/
 .vscode/
 .env
+
+## Node / Next.js dashboard
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+/node_modules
+/.pnp
+.pnp.js
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# local env files
+.env*.local
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
