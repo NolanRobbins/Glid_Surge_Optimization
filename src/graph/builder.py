@@ -11,6 +11,7 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Optional, Any
 from shapely.geometry import Point
+from shapely.geometry.base import BaseGeometry
 from geopy.distance import geodesic
 from tqdm import tqdm
 import sys
@@ -90,6 +91,23 @@ def build_rail_graph(
         rail_class = 4 if is_class1 else 3
         constraints = RAIL_CLASS_CONSTRAINTS.get(rail_class, RAIL_CLASS_CONSTRAINTS[3])
         travel_time_hours = distance_miles / constraints['max_speed_mph']
+
+        # Preserve the actual rail segment geometry so downstream routing can
+        # return a polyline that follows the rail line instead of drawing
+        # straight chords between rail nodes.
+        geometry_coords: Optional[List[List[float]]] = None
+        geom: Optional[BaseGeometry] = getattr(row, "geometry", None)
+        if geom is not None and not getattr(geom, "is_empty", True):
+            try:
+                if geom.geom_type == "LineString":
+                    geometry_coords = [[float(x), float(y)] for (x, y) in geom.coords]
+                elif geom.geom_type == "MultiLineString":
+                    coords: List[List[float]] = []
+                    for part in geom.geoms:
+                        coords.extend([[float(x), float(y)] for (x, y) in part.coords])
+                    geometry_coords = coords if coords else None
+            except Exception:
+                geometry_coords = None
         
         edge_attrs = {
             'distance_miles': distance_miles,
@@ -103,6 +121,9 @@ def build_rail_graph(
             'subdivision': row.get('SUBDIV'),
             'tracks': row.get('TRACKS', 1),
         }
+
+        if geometry_coords:
+            edge_attrs["geometry_coords"] = geometry_coords
         
         G.add_edge(from_node, to_node, **edge_attrs)
     

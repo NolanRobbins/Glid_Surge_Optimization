@@ -24,9 +24,12 @@ cd /home/asus/Desktop/Glid_Surge_Optimization
 ./start_with_nemotron.sh demo
 ```
 *This starts:*
-- **Nemotron 49B (NIM)** on port `8000` (First run takes ~3-5 mins for TensorRT optimization)
-- **FastAPI Backend** on port `8001`
-- **Dashboard** on port `3000`
+- **Nemotron 49B (NIM)** on port `8001` (auto-shifts if already in use)
+- **FastAPI Backend** on port `8002` (auto-shifts if already in use)
+- **Dashboard** on port `3000` (auto-shifts if already in use)
+
+> If you already have a Python server or the Docker demo running, ports like `8000`/`3000` may be taken.  
+> The script will pick the next free port (e.g. `8002`, `3001`) and print the exact URLs.
 
 ### 3. Open Dashboard
 Visit: **http://localhost:3000**
@@ -39,10 +42,10 @@ Check if services are healthy:
 
 ```bash
 # Check NIM Model Status
-curl http://localhost:8000/v1/models
+curl http://localhost:8001/v1/models   # or use the NIM URL printed by the script
 
 # Test Chat Completion
-curl -X POST http://localhost:8000/v1/chat/completions \
+curl -X POST http://localhost:8001/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
     "model": "nemotron-49b",

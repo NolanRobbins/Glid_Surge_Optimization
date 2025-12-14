@@ -12,15 +12,21 @@ interface Message {
 }
 
 interface AIAssistantProps {
-  routeContext?: any
-  surgeContext?: any
-  onRouteOptimize?: (suggestion: any) => void
+  routeContext?: unknown
+  surgeContext?: unknown
+  onRouteOptimize?: (suggestion: unknown) => void
 }
 
 const MODES = {
   assistant: { label: 'Assistant', icon: '💬', color: 'from-blue-500 to-cyan-400' },
   route_optimizer: { label: 'Route Optimizer', icon: '🛤️', color: 'from-emerald-500 to-teal-400' },
   surge_analyst: { label: 'Surge Analyst', icon: '📊', color: 'from-amber-500 to-orange-400' },
+}
+
+type LLMChatResponse = {
+  response: string
+  reasoning?: string
+  suggestion?: unknown
 }
 
 export default function AIAssistant({ routeContext, surgeContext, onRouteOptimize }: AIAssistantProps) {
@@ -105,7 +111,7 @@ export default function AIAssistant({ routeContext, surgeContext, onRouteOptimiz
         throw new Error('Failed to get response')
       }
 
-      const data = await res.json()
+      const data: LLMChatResponse = await res.json()
 
       setMessages(prev => prev.map(msg =>
         msg.id === loadingId ? {
@@ -115,7 +121,11 @@ export default function AIAssistant({ routeContext, surgeContext, onRouteOptimiz
           isLoading: false,
         } : msg
       ))
-    } catch (error) {
+
+      if (mode === 'route_optimizer' && onRouteOptimize && data.suggestion !== undefined) {
+        onRouteOptimize(data.suggestion)
+      }
+    } catch {
       setMessages(prev => prev.map(msg =>
         msg.id === loadingId ? {
           ...msg,

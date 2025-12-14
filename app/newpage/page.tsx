@@ -2,6 +2,7 @@
 
 import { useState, useEffect, Suspense } from 'react'
 import { usePathname, useSearchParams } from 'next/navigation'
+import Image from 'next/image'
 import dynamic from 'next/dynamic'
 import { PortTrafficData } from '@/types/portTraffic'
 import { PortDatabaseEntry } from '@/api/portDatabaseService'
@@ -23,6 +24,7 @@ function NewPageContent() {
   const [error, setError] = useState<string | null>(null)
   const [allPorts, setAllPorts] = useState<Map<string, PortDatabaseEntry>>(new Map())
   const [currentRoute, setCurrentRoute] = useState<Route | null>(null) // Start with no route to show initial center
+  const [currentCompetitorRoute, setCurrentCompetitorRoute] = useState<Route | null>(null)
   const [routePlanningVisible, setRoutePlanningVisible] = useState(true)
 
   const [hasCreatedPickup, setHasCreatedPickup] = useState(false)
@@ -34,7 +36,7 @@ function NewPageContent() {
 
   // Handle new route creation
   const handleRouteCreate = (newRoute: CustomerRoute) => {
-    setCustomerRoutes(prev => [newRoute, ...prev])
+    setCustomerRoutes((prev: CustomerRoute[]) => [newRoute, ...prev])
     // Set as current route to display on map
     if (newRoute.route) {
       setCurrentRoute(newRoute.route)
@@ -65,10 +67,17 @@ function NewPageContent() {
     return loadSyntheticCustomerRoutes()
   })
 
+  // Always use route "16" as the competitor/baseline route (dashed red on the map).
+  useEffect(() => {
+    const route16 = customerRoutes.find((r: CustomerRoute) => String(r.id) === '16')?.route ?? null
+    if (!route16) return
+    setCurrentCompetitorRoute((prev: Route | null) => prev ?? route16)
+  }, [customerRoutes])
+
   // Fetch driving route for in-transit shipment
   useEffect(() => {
     const fetchRouteForInTransit = async () => {
-      const inTransitRoute = customerRoutes.find(route => route.status === 'in_transit')
+      const inTransitRoute = customerRoutes.find((route: CustomerRoute) => route.status === 'in_transit')
       
       if (!inTransitRoute || !inTransitRoute.route) return
       
@@ -88,8 +97,8 @@ function NewPageContent() {
           }
           
           // Update customer routes with the new route data
-          setCustomerRoutes(prevRoutes => 
-            prevRoutes.map(route => 
+          setCustomerRoutes((prevRoutes: CustomerRoute[]) =>
+            prevRoutes.map((route: CustomerRoute) =>
               route.id === inTransitRoute.id
                 ? { ...route, route: updatedRoute }
                 : route
@@ -218,6 +227,7 @@ function NewPageContent() {
           <h2 className="mb-3 text-red-500">Error Loading Data</h2>
           <p className="text-red-300 mb-4">{error}</p>
           <button
+            type="button"
             onClick={() => window.location.reload()}
             className="inline-flex items-center justify-center rounded-md bg-red-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-red-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600 transition-colors"
           >
@@ -235,7 +245,7 @@ function NewPageContent() {
         <div className="flex flex-col items-center gap-3">
           {/* Logo/Avatar */}
           <div>
-            <img 
+            <Image 
               src="/gld_logo.jpeg" 
               alt="Logo" 
               className="w-10 h-10 rounded-lg object-contain"
@@ -283,14 +293,7 @@ function NewPageContent() {
             className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-200 bg-white hover:bg-gray-100 shadow-sm ring-1 ring-inset ring-gray-900/5 transition-colors overflow-hidden"
             title="User Profile"
           >
-<<<<<<< HEAD
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-              <circle cx="12" cy="7" r="4"></circle>
-            </svg>
-=======
->>>>>>> 9e835cc (new components to handle api responses)
-            <img 
+            <Image 
               src="/kevinprofile.jpeg" 
               alt="User Profile" 
               className="w-full h-full object-cover"
@@ -368,6 +371,7 @@ function NewPageContent() {
                   initialCenter={[-118.216458, 33.754185]} // Long Beach Port, Los Angeles
                   initialZoom={14} // Closer zoom to show the port area in detail
                   route={currentRoute} // Show route if selected, otherwise map stays centered on port
+                  competitorRoute={currentCompetitorRoute}
                   containerResized={routePlanningVisible}
                 />
               </div>
@@ -376,11 +380,7 @@ function NewPageContent() {
         </div>
       </main>
     )
-<<<<<<< HEAD
-}
-=======
   }
->>>>>>> 9e835cc (new components to handle api responses)
 
 export default function NewPage() {
   return (

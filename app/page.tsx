@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react'
 import { usePathname } from 'next/navigation'
 import dynamic from 'next/dynamic'
+import Image from 'next/image'
 import CustomerRoutesList, { CustomerRoute } from '@/components/CustomerRoutesList'
 import { Route } from '@/lib/routeCalculation'
 import { getDrivingRoute } from '@/lib/mapboxDirections'
@@ -32,7 +33,9 @@ export default function Home() {
   // Fetch driving route for in-transit shipment (simplified - no port calculations)
   useEffect(() => {
     const fetchRouteForInTransit = async () => {
-      const inTransitRoute = customerRoutes.find(route => route.status === 'in_transit')
+      const inTransitRoute = customerRoutes.find(
+        (route: CustomerRoute) => route.status === 'in_transit'
+      )
       
       if (!inTransitRoute || !inTransitRoute.route) return
       
@@ -52,8 +55,8 @@ export default function Home() {
           }
           
           // Update customer routes with the new route data
-          setCustomerRoutes(prevRoutes => 
-            prevRoutes.map(route => 
+          setCustomerRoutes((prevRoutes: CustomerRoute[]) =>
+            prevRoutes.map((route: CustomerRoute) =>
               route.id === inTransitRoute.id
                 ? { ...route, route: updatedRoute }
                 : route
@@ -89,9 +92,11 @@ export default function Home() {
         <div className="flex flex-col items-center gap-3">
           {/* Logo/Avatar */}
           <div>
-            <img 
+            <Image 
               src="/gld_logo.jpeg" 
               alt="Logo" 
+              width={40}
+              height={40}
               className="w-10 h-10 rounded-lg object-contain"
             />
           </div>
@@ -137,16 +142,11 @@ export default function Home() {
             className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-200 bg-white hover:bg-gray-100 shadow-sm ring-1 ring-inset ring-gray-900/5 transition-colors overflow-hidden"
             title="User Profile"
           >
-<<<<<<< HEAD
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-              <circle cx="12" cy="7" r="4"></circle>
-            </svg>
-=======
->>>>>>> 9e835cc (new components to handle api responses)
-            <img 
+            <Image 
               src="/kevinprofile.jpeg" 
               alt="User Profile" 
+              width={40}
+              height={40}
               className="w-full h-full object-cover"
             />
           </button>

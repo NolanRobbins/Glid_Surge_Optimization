@@ -12,7 +12,14 @@ from pydantic import BaseModel, Field, validator
 from src.config import MODELS_DIR, OUTPUT_DIR, PROJECT_ROOT
 from src.forecasting.surge_model import SurgePredictionModel
 from src.graph.route_adapter import RouteAdapter
-from src.api.llm_service import get_llm_service, ChatRequest, ChatResponse, LLMService
+try:
+    from src.api.llm_service import get_llm_service, ChatRequest, ChatResponse, LLMService
+except Exception as exc:  # pragma: no cover
+    get_llm_service = None  # type: ignore
+    ChatRequest = None  # type: ignore
+    ChatResponse = None  # type: ignore
+    LLMService = None  # type: ignore
+    logger.warning("LLM service disabled (optional dependency missing): %s", exc)
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +123,8 @@ async def startup_event() -> None:
 
     # Initialize LLM service (Nemotron 49B)
     try:
+        if get_llm_service is None:
+            raise RuntimeError("LLM service disabled (missing optional dependency)")
         llm_service = get_llm_service()
         llm_available = await llm_service.health_check()
         if llm_available:
@@ -213,6 +222,7 @@ def compute_route(payload: RouteComputeRequest) -> Dict[str, Any]:
 
     return {
         "route": result["route"],
+        "legs": result.get("legs"),
         "metrics": result["metrics"],
         "path_nodes": result["path_nodes"],
         "origin_links": result["origin_links"],

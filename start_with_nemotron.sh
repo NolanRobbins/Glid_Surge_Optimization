@@ -29,21 +29,84 @@ NC='\033[0m' # No Color
 
 MODEL_PATH="/home/asus/Desktop/Nemotron 49B"
 PROJECT_DIR="/home/asus/Desktop/Glid_Surge_Optimization"
+MODE="${1:-demo}"
+
+# ---------- Port helpers (avoid conflicts with existing servers) ----------
+port_in_use() {
+    local port="$1"
+    # Prefer ss if available
+    if command -v ss >/dev/null 2>&1; then
+        ss -ltn 2>/dev/null | awk '{print $4}' | grep -E "[:.]${port}$" -q
+        return $?
+    fi
+    # Fallback to lsof
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1
+        return $?
+    fi
+    # Last resort: /dev/tcp (can be slow / not always enabled)
+    (echo >/dev/tcp/127.0.0.1/"$port") >/dev/null 2>&1 && return 0 || return 1
+}
+
+pick_free_port() {
+    local start_port="$1"
+    local max_tries="${2:-50}"
+    local p="$start_port"
+    local i=0
+    while [ $i -lt $max_tries ]; do
+        if ! port_in_use "$p"; then
+            echo "$p"
+            return 0
+        fi
+        p=$((p + 1))
+        i=$((i + 1))
+    done
+    echo "$start_port"
+    return 1
+}
+
+configure_ports() {
+    # Defaults (match docs), but auto-shift if already taken (e.g. existing uvicorn/api or frontend)
+    # Prefer putting NIM on 8001 (common to reserve 8000 for local Python APIs)
+    NIM_PORT="${NIM_PORT:-$(pick_free_port 8001 100)}"
+    # Demo FastAPI backend defaults to 8002 (auto-shifts if taken)
+    API_PORT="${API_PORT:-$(pick_free_port 8002 100)}"
+    DASHBOARD_PORT="${DASHBOARD_PORT:-$(pick_free_port 3000 50)}"
+
+    export NIM_PORT API_PORT DASHBOARD_PORT
+
+    # Env vars consumed by Next.js route handlers
+    export API_BASE_URL="http://localhost:${API_PORT}"
+    export LLM_DIRECT_URL="http://localhost:${NIM_PORT}"
+    export GLID_API_BASE_URL="http://localhost:${API_PORT}"
+    export NEXT_PUBLIC_GLID_API_BASE_URL="http://localhost:${API_PORT}"
+}
+
+# Always configure ports early so we can print consistent URLs
+configure_ports
 
 # Load .env if exists
 if [ -f "$PROJECT_DIR/.env" ]; then
     export $(cat "$PROJECT_DIR/.env" | grep -v '^#' | xargs)
 fi
 
-# Check if model exists
-echo -e "${BLUE}[1/5]${NC} Checking Nemotron 49B model..."
-if [ -d "$MODEL_PATH" ]; then
-    MODEL_SIZE=$(du -sh "$MODEL_PATH" | cut -f1)
-    echo -e "${GREEN}✓${NC} Model found at: $MODEL_PATH ($MODEL_SIZE)"
+check_local_model() {
+    echo -e "${BLUE}[1/5]${NC} Checking local Nemotron 49B model..."
+    if [ -d "$MODEL_PATH" ]; then
+        MODEL_SIZE=$(du -sh "$MODEL_PATH" | cut -f1)
+        echo -e "${GREEN}✓${NC} Model found at: $MODEL_PATH ($MODEL_SIZE)"
+    else
+        echo -e "${RED}✗${NC} Model not found at: $MODEL_PATH"
+        echo "  Please ensure the model is downloaded to the Desktop/Nemotron 49B folder"
+        exit 1
+    fi
+}
+
+# Only require local model files for non-NIM modes
+if [[ "$MODE" == "all" || "$MODE" == "llm" || "$MODE" == "native" ]]; then
+    check_local_model
 else
-    echo -e "${RED}✗${NC} Model not found at: $MODEL_PATH"
-    echo "  Please ensure the model is downloaded to the Desktop/Nemotron 49B folder"
-    exit 1
+    echo -e "${BLUE}[1/5]${NC} Local model directory not required for NIM mode"
 fi
 
 # Check GPU availability
@@ -75,6 +138,15 @@ start_demo() {
     echo -e "\n${BLUE}[3/5]${NC} Starting Nemotron 49B via NVIDIA NIM..."
     echo "  Using TensorRT-LLM optimizations for Blackwell GB10"
     echo "  This may take 3-8 minutes for initial model load..."
+    if [ "$NIM_PORT" != "8001" ]; then
+        echo -e "  ${YELLOW}!${NC} Port 8001 is busy; using NIM_PORT=${NIM_PORT} instead"
+    fi
+    if [ "$API_PORT" != "8002" ]; then
+        echo -e "  ${YELLOW}!${NC} Port 8002 is busy; using API_PORT=${API_PORT} instead"
+    fi
+    if [ "$DASHBOARD_PORT" != "3000" ]; then
+        echo -e "  ${YELLOW}!${NC} Port 3000 is busy; using DASHBOARD_PORT=${DASHBOARD_PORT} instead"
+    fi
     
     # Start NIM in background
     docker compose -f docker-compose.nim.yml up -d nemotron-nim
@@ -85,11 +157,11 @@ start_demo() {
     MAX_WAIT=600  # 10 minutes
     WAITED=0
     while [ $WAITED -lt $MAX_WAIT ]; do
-        if curl -s http://localhost:8000/v1/health/ready > /dev/null 2>&1; then
+        if curl -s "http://localhost:${NIM_PORT}/v1/health/ready" > /dev/null 2>&1; then
             echo -e "\n${GREEN}✓${NC} NIM server is ready!"
             break
         fi
-        if curl -s http://localhost:8000/v1/models > /dev/null 2>&1; then
+        if curl -s "http://localhost:${NIM_PORT}/v1/models" > /dev/null 2>&1; then
             echo -e "\n${GREEN}✓${NC} NIM server is ready!"
             break
         fi
@@ -107,18 +179,17 @@ start_demo() {
     echo -e "\n${BLUE}[5/5]${NC} Starting API and Dashboard..."
     
     # Start FastAPI in background (uses port 8001 to avoid conflict with NIM on 8000)
-    export API_PORT=8001
     cd "$PROJECT_DIR"
-    uvicorn src.api.server:app --host 0.0.0.0 --port 8001 &
+    uvicorn src.api.server:app --host 0.0.0.0 --port "$API_PORT" &
     API_PID=$!
-    echo "  FastAPI started on port 8001 (PID: $API_PID)"
+    echo "  FastAPI started on port ${API_PORT} (PID: $API_PID)"
     
     sleep 3
     
     # Start Next.js dashboard
-    npm run dev &
+    PORT="$DASHBOARD_PORT" npm run dev &
     DASHBOARD_PID=$!
-    echo "  Dashboard started (PID: $DASHBOARD_PID)"
+    echo "  Dashboard started on port ${DASHBOARD_PORT} (PID: $DASHBOARD_PID)"
     
     echo ""
     echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
@@ -126,9 +197,9 @@ start_demo() {
     echo -e "${GREEN}═══════════════════════════════════════════════════════════════${NC}"
     echo ""
     echo "  Services:"
-    echo "  ├── Nemotron 49B (NIM):  http://localhost:8000"
-    echo "  ├── FastAPI Backend:     http://localhost:8001"
-    echo "  └── Dashboard:           http://localhost:3000"
+    echo "  ├── Nemotron 49B (NIM):  http://localhost:${NIM_PORT}"
+    echo "  ├── FastAPI Backend:     http://localhost:${API_PORT}"
+    echo "  └── Dashboard:           http://localhost:${DASHBOARD_PORT}"
     echo ""
     echo "  Performance Features:"
     echo "  ├── TensorRT-LLM acceleration"
@@ -137,8 +208,8 @@ start_demo() {
     echo "  └── 128GB unified memory utilization"
     echo ""
     echo "  Quick Tests:"
-    echo "  curl http://localhost:8000/v1/models"
-    echo "  curl -X POST http://localhost:8000/v1/chat/completions \\"
+    echo "  curl http://localhost:${NIM_PORT}/v1/models"
+    echo "  curl -X POST http://localhost:${NIM_PORT}/v1/chat/completions \\"
     echo "    -H 'Content-Type: application/json' \\"
     echo "    -d '{\"model\": \"nemotron-49b\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello!\"}]}'"
     echo ""
@@ -273,7 +344,7 @@ start_nim() {
 }
 
 # Parse arguments
-case "${1:-demo}" in
+case "$MODE" in
     demo)
         start_demo
         ;;

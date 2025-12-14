@@ -1,0 +1,26 @@
+# Node / Next
+node_modules
+.next
+npm-debug.log*
+yarn-error.log*
+
+# Python / cache
+__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+
+# Data / outputs (huge)
+data
+!data/syntheticCustomerRoutes.json
+output
+models/checkpoints
+
+# Git
+.git
+.gitignore
+
+# IDE
+.cursor
+
+

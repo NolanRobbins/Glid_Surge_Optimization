@@ -111,6 +111,138 @@ class RouteAdapter:
             coords.append([lon, lat])
         return coords
 
+    @staticmethod
+    def _path_to_polyline(G: nx.Graph, path: List[Any]) -> List[List[float]]:
+        """
+        Convert a node path to a polyline that follows edge geometries when available.
+
+        - For rail edges, we prefer `geometry_coords` (captured from NTAD rail lines).
+        - For road/external connector edges, we fall back to straight segments.
+        """
+        if not path:
+            return []
+
+        def node_coord(node_id: Any) -> Optional[Tuple[float, float]]:
+            data = G.nodes.get(node_id, {})
+            lat = data.get("lat")
+            lon = data.get("lon")
+            if lat is None or lon is None:
+                return None
+            return float(lon), float(lat)
+
+        poly: List[List[float]] = []
+
+        for i in range(len(path) - 1):
+            a = path[i]
+            b = path[i + 1]
+            a_xy = node_coord(a)
+            b_xy = node_coord(b)
+            if not a_xy or not b_xy:
+                continue
+
+            edge_data = G.get_edge_data(a, b, {}) or {}
+            seg: List[List[float]] = []
+
+            # Prefer real rail geometry when present
+            geom_coords = edge_data.get("geometry_coords")
+            if isinstance(geom_coords, list) and len(geom_coords) >= 2:
+                # Determine direction: choose the end closer to the current node
+                first = geom_coords[0]
+                last = geom_coords[-1]
+                try:
+                    d_first = (first[0] - a_xy[0]) ** 2 + (first[1] - a_xy[1]) ** 2
+                    d_last = (last[0] - a_xy[0]) ** 2 + (last[1] - a_xy[1]) ** 2
+                    seg = geom_coords if d_first <= d_last else list(reversed(geom_coords))
+                except Exception:
+                    seg = geom_coords
+            else:
+                seg = [[a_xy[0], a_xy[1]], [b_xy[0], b_xy[1]]]
+
+            if not seg:
+                continue
+
+            # Stitch segments without duplicating the join point
+            if not poly:
+                poly.extend(seg)
+            else:
+                if poly[-1][0] == seg[0][0] and poly[-1][1] == seg[0][1]:
+                    poly.extend(seg[1:])
+                else:
+                    poly.extend(seg)
+
+        return poly
+
+    @staticmethod
+    def _path_to_leg_polylines(G: nx.Graph, path: List[Any]) -> Dict[str, List[List[float]]]:
+        """
+        Build separate polylines for road vs rail legs.
+
+        Returns:
+          {
+            "road": [[lon, lat], ...],
+            "rail": [[lon, lat], ...],
+          }
+        """
+        if not path:
+            return {"road": [], "rail": []}
+
+        def node_coord(node_id: Any) -> Optional[Tuple[float, float]]:
+            data = G.nodes.get(node_id, {})
+            lat = data.get("lat")
+            lon = data.get("lon")
+            if lat is None or lon is None:
+                return None
+            return float(lon), float(lat)
+
+        def stitch(poly: List[List[float]], seg: List[List[float]]) -> None:
+            if not seg:
+                return
+            if not poly:
+                poly.extend(seg)
+                return
+            if poly[-1][0] == seg[0][0] and poly[-1][1] == seg[0][1]:
+                poly.extend(seg[1:])
+            else:
+                poly.extend(seg)
+
+        road_poly: List[List[float]] = []
+        rail_poly: List[List[float]] = []
+
+        for i in range(len(path) - 1):
+            a = path[i]
+            b = path[i + 1]
+            a_xy = node_coord(a)
+            b_xy = node_coord(b)
+            if not a_xy or not b_xy:
+                continue
+
+            edge_data = G.get_edge_data(a, b, {}) or {}
+            edge_type = edge_data.get("edge_type") or "road"
+
+            seg: List[List[float]] = []
+
+            # Rail edges: use stored NTAD geometry when present
+            geom_coords = edge_data.get("geometry_coords")
+            if edge_type == "rail" and isinstance(geom_coords, list) and len(geom_coords) >= 2:
+                first = geom_coords[0]
+                last = geom_coords[-1]
+                try:
+                    d_first = (first[0] - a_xy[0]) ** 2 + (first[1] - a_xy[1]) ** 2
+                    d_last = (last[0] - a_xy[0]) ** 2 + (last[1] - a_xy[1]) ** 2
+                    seg = geom_coords if d_first <= d_last else list(reversed(geom_coords))
+                except Exception:
+                    seg = geom_coords
+            else:
+                # Road/external connectors: straight segment
+                seg = [[a_xy[0], a_xy[1]], [b_xy[0], b_xy[1]]]
+
+            if edge_type == "rail":
+                stitch(rail_poly, seg)
+            else:
+                stitch(road_poly, seg)
+
+        return {"road": road_poly, "rail": rail_poly}
+
     # ------------------------------------------------------------- public API
     def compute_route(
         self,
@@ -145,7 +277,8 @@ class RouteAdapter:
             G, source="origin", target="destination", optimize_for=optimize_for
         )
 
-        coords = self._path_to_coordinates(G, metrics.path)
+        coords = self._path_to_polyline(G, metrics.path)
+        legs = self._path_to_leg_polylines(G, metrics.path)
         feature = {
             "type": "Feature",
             "properties": {
@@ -161,8 +294,24 @@ class RouteAdapter:
             "geometry": {"type": "LineString", "coordinates": coords},
         }
 
+        road_feature = {
+            "type": "Feature",
+            "properties": {"edge_type": "road"},
+            "geometry": {"type": "LineString", "coordinates": legs["road"]},
+        }
+        rail_feature = {
+            "type": "Feature",
+            "properties": {"edge_type": "rail"},
+            "geometry": {"type": "LineString", "coordinates": legs["rail"]},
+        }
+
         return {
             "route": feature,
+            # Separate LineStrings for each mode (when present).
+            "legs": {
+                "road": road_feature,
+                "rail": rail_feature,
+            },
             "metrics": asdict(metrics),
             "path_nodes": metrics.path,
             "origin_links": origin_links,

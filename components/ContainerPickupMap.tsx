@@ -13,6 +13,7 @@ const LONG_BEACH_PORT_COORDS: [number, number] = [-118.216458, 33.754185]
 
 interface ContainerPickupMapProps {
   route?: Route | null
+  competitorRoute?: Route | null
   containerResized?: boolean
   initialCenter?: [number, number] // Optional initial map center [lng, lat]
   initialZoom?: number // Optional initial zoom level
@@ -20,6 +21,7 @@ interface ContainerPickupMapProps {
 
 export default function ContainerPickupMap({
   route,
+  competitorRoute,
   containerResized,
   initialCenter = LONG_BEACH_PORT_COORDS,
   initialZoom = 14,
@@ -211,10 +213,10 @@ export default function ContainerPickupMap({
     }
   }, [containerResized])
 
-  // Display route on map
+  // Display routes on map (current + competitor baseline)
   useEffect(() => {
-    if (!mapLoaded || !map.current || !route) {
-      if (!route && map.current && mapLoaded && initialCenter) {
+    if (!mapLoaded || !map.current || (!route && !competitorRoute)) {
+      if (!route && !competitorRoute && map.current && mapLoaded && initialCenter) {
         map.current.flyTo({
           center: initialCenter,
           zoom: initialZoom || 12,
@@ -238,22 +240,36 @@ export default function ContainerPickupMap({
       }
     }
 
-    const routeCoordinates = getRouteCoordinates(route)
-    
-    const routeGeoJSON: GeoJSON.Feature<GeoJSON.LineString> = {
-      type: 'Feature',
-      properties: {},
-      geometry: {
-        type: 'LineString',
-        coordinates: routeCoordinates,
-      },
-    }
+    const routeCoordinates = route ? getRouteCoordinates(route) : null
+    const competitorCoordinates = competitorRoute ? getRouteCoordinates(competitorRoute) : null
+
+    const routeGeoJSON: GeoJSON.Feature<GeoJSON.LineString> | null = routeCoordinates
+      ? {
+          type: 'Feature',
+          properties: {},
+          geometry: {
+            type: 'LineString',
+            coordinates: routeCoordinates,
+          },
+        }
+      : null
+
+    const competitorGeoJSON: GeoJSON.Feature<GeoJSON.LineString> | null = competitorCoordinates
+      ? {
+          type: 'Feature',
+          properties: {},
+          geometry: {
+            type: 'LineString',
+            coordinates: competitorCoordinates,
+          },
+        }
+      : null
 
     // Wait for style to be loaded before adding sources/layers
     const addRouteLayer = () => {
       if (!map.current) return
 
-      // Remove existing route layer if any
+      // Remove existing layers if any
       if (map.current.getLayer('route')) {
         map.current.removeLayer('route')
       }
@@ -261,31 +277,71 @@ export default function ContainerPickupMap({
         map.current.removeSource('route')
       }
 
-      try {
-        map.current.addSource('route', {
-          type: 'geojson',
-          data: routeGeoJSON,
-        })
+      if (map.current.getLayer('competitor-route')) {
+        map.current.removeLayer('competitor-route')
+      }
+      if (map.current.getSource('competitor-route')) {
+        map.current.removeSource('competitor-route')
+      }
 
-        map.current.addLayer({
-          id: 'route',
-          type: 'line',
-          source: 'route',
-          layout: {
-            'line-join': 'round',
-            'line-cap': 'round',
-          },
-          paint: {
-            'line-color': '#10b981', // Green for our route
-            'line-width': 4,
-            'line-opacity': 0.8,
-          },
-        })
+      try {
+        // Add competitor/baseline route first (dashed red)
+        if (competitorGeoJSON) {
+          map.current.addSource('competitor-route', {
+            type: 'geojson',
+            data: competitorGeoJSON,
+          })
+
+          map.current.addLayer({
+            id: 'competitor-route',
+            type: 'line',
+            source: 'competitor-route',
+            layout: {
+              'line-join': 'round',
+              'line-cap': 'round',
+            },
+            paint: {
+              'line-color': '#ef4444', // Red baseline
+              // Slightly thicker than the active route so it remains visible
+              // even when routes overlap (acts like an outline).
+              'line-width': 6,
+              'line-opacity': 0.9,
+              // Dashed styling for competitor route comparison.
+              'line-dasharray': [2, 2],
+            },
+          })
+        }
+
+        // Add current route on top (green)
+        if (routeGeoJSON) {
+          map.current.addSource('route', {
+            type: 'geojson',
+            data: routeGeoJSON,
+          })
+
+          map.current.addLayer({
+            id: 'route',
+            type: 'line',
+            source: 'route',
+            layout: {
+              'line-join': 'round',
+              'line-cap': 'round',
+            },
+            paint: {
+              'line-color': '#10b981', // Green for current route
+              'line-width': 4,
+              'line-opacity': 0.85,
+            },
+          })
+        }
 
         // Fit map to route bounds
         if (initialCenter) {
-          const routeCenterLng = routeCoordinates.reduce((sum, coord) => sum + coord[0], 0) / routeCoordinates.length
-          const routeCenterLat = routeCoordinates.reduce((sum, coord) => sum + coord[1], 0) / routeCoordinates.length
+          const coordsForCenter = routeCoordinates || competitorCoordinates
+          if (!coordsForCenter || coordsForCenter.length === 0) return
+
+          const routeCenterLng = coordsForCenter.reduce((sum, coord) => sum + coord[0], 0) / coordsForCenter.length
+          const routeCenterLat = coordsForCenter.reduce((sum, coord) => sum + coord[1], 0) / coordsForCenter.length
           
           const distanceLng = routeCenterLng - initialCenter[0]
           const distanceLat = routeCenterLat - initialCenter[1]
@@ -301,9 +357,14 @@ export default function ContainerPickupMap({
           }
         }
         
-        const bounds = routeCoordinates.reduce((bounds, coord) => {
+        const coordsForBounds = (routeCoordinates && routeCoordinates.length > 0)
+          ? routeCoordinates
+          : (competitorCoordinates || [])
+        if (coordsForBounds.length < 2) return
+
+        const bounds = coordsForBounds.reduce((bounds, coord) => {
           return bounds.extend(coord)
-        }, new mapboxgl.LngLatBounds(routeCoordinates[0], routeCoordinates[0]))
+        }, new mapboxgl.LngLatBounds(coordsForBounds[0], coordsForBounds[0]))
 
         map.current.fitBounds(bounds, {
           padding: 50,
@@ -331,9 +392,15 @@ export default function ContainerPickupMap({
         if (map.current.getSource('route')) {
           map.current.removeSource('route')
         }
+        if (map.current.getLayer('competitor-route')) {
+          map.current.removeLayer('competitor-route')
+        }
+        if (map.current.getSource('competitor-route')) {
+          map.current.removeSource('competitor-route')
+        }
       }
     }
-  }, [mapLoaded, route, initialCenter, initialZoom])
+  }, [mapLoaded, route, competitorRoute, initialCenter, initialZoom])
 
   return (
     <div ref={mapContainer} className="w-full h-full" />

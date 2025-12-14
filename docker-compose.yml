@@ -84,6 +84,25 @@ services:
           devices:
             - capabilities: [gpu]
 
+  # Next.js frontend (porttraffic)
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    image: glid-frontend:latest
+    container_name: glid-frontend
+    env_file:
+      - .env
+    environment:
+      # Mapbox for the UI maps (loaded from env_file)
+      - NEXT_PUBLIC_MAPBOX_TOKEN
+      # Optional: point the UI to the API service by DNS name inside compose network
+      - NEXT_PUBLIC_GLID_API_BASE_URL=http://api:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
   # Use pre-built RAPIDS container directly (faster, no build needed)
   rapids-quick:
     image: rapidsai/base:25.12-cuda13-py3.12-arm64

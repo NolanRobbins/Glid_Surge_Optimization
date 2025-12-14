@@ -21,6 +21,8 @@ models/checkpoints/
 
 ## Python caches
 __pycache__/
+**/__pycache__/
+
 *.py[cod]
 
 ## Virtual environments / local tooling

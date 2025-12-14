@@ -1,9 +1,9 @@
 import { NextResponse } from 'next/server'
 
-// FastAPI backend (port 8001 when running with NIM)
-const API_BASE = process.env.API_BASE_URL || 'http://localhost:8001'
-// Direct NIM/vLLM endpoint for status checks (NIM uses 8000)
-const LLM_DIRECT_URL = process.env.LLM_DIRECT_URL || 'http://localhost:8000'
+// FastAPI backend (default 8002 in demo mode; may be overridden via env)
+const API_BASE = process.env.API_BASE_URL || 'http://localhost:8002'
+// Direct NIM/vLLM endpoint for status checks (default 8001 in demo mode; may be overridden via env)
+const LLM_DIRECT_URL = process.env.LLM_DIRECT_URL || 'http://localhost:8001'
 
 export async function GET() {
   try {

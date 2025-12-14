@@ -1,12 +1,47 @@
 'use client'
 
 import React, { useState, useMemo } from 'react'
+import Image from 'next/image'
 import { Route, RoutePoint, calculateDistance } from '@/lib/routeCalculation'
 import { calculateTonMileCost, calculateCompetitorCost, PRICING } from '@/lib/pricing'
 import { getSyntheticRoutePoints } from '@/lib/syntheticDataService'
 import { PortTrafficData } from '@/types/portTraffic'
 import { PortDatabaseEntry } from '@/api/portDatabaseService'
 import RouteOptionCard from './RouteOptionCard'
+
+type OptimizeFor = 'time' | 'distance'
+
+type ComputeRouteResponse = {
+  route: {
+    type: 'Feature'
+    properties?: {
+      optimize_for?: string
+      total_distance_miles?: number
+      total_time_hours?: number
+      rail_distance_miles?: number
+      road_distance_miles?: number
+    }
+    geometry?: {
+      type: 'LineString'
+      coordinates: number[][]
+    }
+  }
+  metrics?: {
+    total_distance_miles?: number
+    total_time_hours?: number
+  }
+}
+
+type OptimizedRouteOption = {
+  key: OptimizeFor
+  title: string
+  description: string
+  distanceMiles: number
+  estimatedTimeHours: number
+  cost: number
+  optimizationLevel: 'optimal' | 'good'
+  route: Route
+}
 
 export interface CustomerRoute {
   id: string
@@ -38,6 +73,10 @@ interface CustomerRoutesListProps {
 export default function CustomerRoutesList({ routes, onRouteSelect }: CustomerRoutesListProps) {
   const [selectedRoute, setSelectedRoute] = useState<CustomerRoute | null>(null)
   const [showOptimizedRoutes, setShowOptimizedRoutes] = useState(false)
+  const [isOptimizing, setIsOptimizing] = useState(false)
+  const [optimizeError, setOptimizeError] = useState<string | null>(null)
+  const [optimizedRouteOptions, setOptimizedRouteOptions] = useState<OptimizedRouteOption[] | null>(null)
+  const [optimizedForRouteId, setOptimizedForRouteId] = useState<string | null>(null)
   
   // Get route points for distance calculation
   const routePoints = useMemo(() => getSyntheticRoutePoints(), [])
@@ -80,19 +119,11 @@ export default function CustomerRoutesList({ routes, onRouteSelect }: CustomerRo
   
   // Calculate costs for a route
   const calculateRouteCosts = (route: CustomerRoute) => {
-<<<<<<< HEAD
-    let distanceKm = 0
-=======
->>>>>>> 9e835cc (new components to handle api responses)
     let ourDistanceKm = 0
     let competitorDistanceKm = 0
     
     // Get our route distance
     if (route.route?.distance) {
-<<<<<<< HEAD
-      distanceKm = route.route.distance
-=======
->>>>>>> 9e835cc (new components to handle api responses)
       ourDistanceKm = route.route.distance
     } else {
       // Calculate distance from route points if available
@@ -100,10 +131,6 @@ export default function CustomerRoutesList({ routes, onRouteSelect }: CustomerRo
       const destPoint = findRoutePoint(route.storageFacility || route.destinationPort)
       
       if (originPoint && destPoint) {
-<<<<<<< HEAD
-        distanceKm = calculateDistance(originPoint.coordinates, destPoint.coordinates)
-=======
->>>>>>> 9e835cc (new components to handle api responses)
         ourDistanceKm = calculateDistance(originPoint.coordinates, destPoint.coordinates)
       }
     }
@@ -126,29 +153,7 @@ export default function CustomerRoutesList({ routes, onRouteSelect }: CustomerRo
       competitorDistanceKm = ourDistanceKm
     }
     
-    // Get competitor route distance (use road-based distance if available)
-    if (route.competitorRoute?.distance) {
-      competitorDistanceKm = route.competitorRoute.distance
-    } else if (route.competitorRoute?.coordinates && route.competitorRoute.coordinates.length > 0) {
-      // Calculate path distance from competitor route coordinates
-      let totalDistance = 0
-      for (let i = 0; i < route.competitorRoute.coordinates.length - 1; i++) {
-        totalDistance += calculateDistance(
-          route.competitorRoute.coordinates[i],
-          route.competitorRoute.coordinates[i + 1]
-        )
-      }
-      competitorDistanceKm = totalDistance
-    } else {
-      // Fallback to our route distance if competitor route distance not available
-      competitorDistanceKm = ourDistanceKm
-    }
-    
     // Convert to miles
-<<<<<<< HEAD
-    const distanceMiles = distanceKm * 0.621371
-=======
->>>>>>> 9e835cc (new components to handle api responses)
     const ourDistanceMiles = ourDistanceKm * 0.621371
     const competitorDistanceMiles = competitorDistanceKm * 0.621371
     
@@ -163,11 +168,7 @@ export default function CustomerRoutesList({ routes, onRouteSelect }: CustomerRo
     // Calculate our cost (using standard pricing)
     const ourCost = calculateTonMileCost(ourDistanceMiles, weightTons, PRICING.STANDARD)
     
-<<<<<<< HEAD
-    // Calculate competitor cost
-=======
     // Calculate competitor cost using competitor route distance
->>>>>>> 9e835cc (new components to handle api responses)
     const competitorCost = calculateCompetitorCost(competitorDistanceMiles, weightTons)
     
     // Calculate savings
@@ -182,6 +183,136 @@ export default function CustomerRoutesList({ routes, onRouteSelect }: CustomerRo
       distanceMiles: ourDistanceMiles,
       competitorDistanceMiles,
       weightTons,
+    }
+  }
+
+  const computeOptimizedRoute = async (args: {
+    origin: [number, number]
+    destination: [number, number]
+    originName?: string
+    destinationName?: string
+    optimizeFor: OptimizeFor
+  }): Promise<{ route: Route; distanceMiles: number; timeHours: number }> => {
+    const res = await fetch('/api/routes/compute', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        origin: args.origin,
+        destination: args.destination,
+        optimize_for: args.optimizeFor,
+        mode: 'auto',
+      }),
+    })
+
+    if (!res.ok) {
+      const text = await res.text()
+      throw new Error(text || `Route compute failed (${res.status})`)
+    }
+
+    const data = (await res.json()) as ComputeRouteResponse
+    const coordsRaw = data.route?.geometry?.coordinates || []
+    const coordinates = coordsRaw
+      .filter((p) => Array.isArray(p) && p.length >= 2)
+      .map((p) => [Number(p[0]), Number(p[1])] as [number, number])
+
+    const distanceMiles =
+      data.route?.properties?.total_distance_miles ??
+      data.metrics?.total_distance_miles ??
+      0
+
+    const timeHours =
+      data.route?.properties?.total_time_hours ??
+      data.metrics?.total_time_hours ??
+      0
+
+    const route: Route = {
+      origin: { type: 'port', id: 'origin', name: args.originName || 'Origin', coordinates: args.origin },
+      destination: { type: 'port', id: 'destination', name: args.destinationName || 'Destination', coordinates: args.destination },
+      coordinates,
+      distance: distanceMiles * 1.60934, // miles -> km
+    }
+
+    return { route, distanceMiles, timeHours }
+  }
+
+  const handleGenerateOptimizedRoutes = async () => {
+    if (!selectedRoute) return
+
+    setOptimizeError(null)
+    setShowOptimizedRoutes(true)
+
+    // Cache per selected route id (avoid re-computing when just toggling UI)
+    if (optimizedRouteOptions && optimizedForRouteId === selectedRoute.id) {
+      return
+    }
+
+    const originPoint =
+      findRoutePoint(selectedRoute.originPort) || selectedRoute.route?.origin || null
+    const destPoint =
+      findRoutePoint(selectedRoute.storageFacility || selectedRoute.destinationPort) ||
+      selectedRoute.route?.destination ||
+      null
+
+    if (!originPoint || !destPoint) {
+      setOptimizeError('Missing origin/destination coordinates for this route.')
+      return
+    }
+
+    try {
+      setIsOptimizing(true)
+
+      const weightTons = selectedRoute.containerWeight || 15
+
+      const [timeResult, distanceResult] = await Promise.all([
+        computeOptimizedRoute({
+          origin: originPoint.coordinates,
+          destination: destPoint.coordinates,
+          originName: selectedRoute.originPort,
+          destinationName: selectedRoute.storageFacility || selectedRoute.destinationPort,
+          optimizeFor: 'time',
+        }),
+        computeOptimizedRoute({
+          origin: originPoint.coordinates,
+          destination: destPoint.coordinates,
+          originName: selectedRoute.originPort,
+          destinationName: selectedRoute.storageFacility || selectedRoute.destinationPort,
+          optimizeFor: 'distance',
+        }),
+      ])
+
+      const timeOption: OptimizedRouteOption = {
+        key: 'time',
+        title: 'Optimized (Fastest)',
+        description: 'Computed via /routes/compute (optimize_for=time)',
+        distanceMiles: timeResult.distanceMiles,
+        estimatedTimeHours: timeResult.timeHours || (timeResult.distanceMiles / 30),
+        cost: calculateTonMileCost(timeResult.distanceMiles, weightTons, PRICING.STANDARD),
+        optimizationLevel: 'optimal',
+        route: timeResult.route,
+      }
+
+      const distanceOption: OptimizedRouteOption = {
+        key: 'distance',
+        title: 'Optimized (Shortest)',
+        description: 'Computed via /routes/compute (optimize_for=distance)',
+        distanceMiles: distanceResult.distanceMiles,
+        estimatedTimeHours: distanceResult.timeHours || (distanceResult.distanceMiles / 30),
+        cost: calculateTonMileCost(distanceResult.distanceMiles, weightTons, PRICING.STANDARD),
+        optimizationLevel: 'good',
+        route: distanceResult.route,
+      }
+
+      setOptimizedRouteOptions([timeOption, distanceOption])
+      setOptimizedForRouteId(selectedRoute.id)
+
+      // Default apply "fastest" to the map + selected route
+      const updatedSelected: CustomerRoute = { ...selectedRoute, route: timeResult.route }
+      setSelectedRoute(updatedSelected)
+      onRouteSelect?.(updatedSelected)
+    } catch (e) {
+      setOptimizeError(e instanceof Error ? e.message : 'Failed to compute optimized routes.')
+    } finally {
+      setIsOptimizing(false)
     }
   }
   
@@ -330,15 +461,19 @@ export default function CustomerRoutesList({ routes, onRouteSelect }: CustomerRo
               <div className="flex items-center gap-3 mb-2">
                 <div className="flex-shrink-0 w-12 h-12 flex items-center justify-center bg-gray-50 rounded-lg border border-gray-200 overflow-hidden">
                   {selectedRoute.vehicleImage ? (
-                    <img 
+                    <Image 
                       src={selectedRoute.vehicleImage} 
                       alt={selectedRoute.vehicleType || 'Vehicle'} 
+                      width={48}
+                      height={48}
                       className="w-full h-full object-cover"
                     />
                   ) : getVehicleImageSrc(selectedRoute.vehicleType) ? (
-                    <img 
+                    <Image 
                       src={getVehicleImageSrc(selectedRoute.vehicleType)!} 
                       alt={selectedRoute.vehicleType || 'Vehicle'} 
+                      width={48}
+                      height={48}
                       className="w-full h-full object-cover"
                     />
                   ) : (
@@ -458,131 +593,41 @@ export default function CustomerRoutesList({ routes, onRouteSelect }: CustomerRo
             <div className="pt-4 border-t border-gray-200">
               <button
                 type="button"
-                onClick={() => {
-                  setShowOptimizedRoutes(!showOptimizedRoutes)
-                }}
-                className="w-full px-4 py-2 bg-black text-white text-sm font-medium rounded-lg hover:bg-gray-900 transition-colors"
+                onClick={handleGenerateOptimizedRoutes}
+                disabled={isOptimizing}
+                className={`w-full px-4 py-2 bg-black text-white text-sm font-medium rounded-lg hover:bg-gray-900 transition-colors ${
+                  isOptimizing ? 'opacity-60 cursor-not-allowed' : ''
+                }`}
               >
-                Generate optimized routes
+                {isOptimizing ? 'Generating optimized routes…' : 'Generate optimized routes'}
               </button>
               
-<<<<<<< HEAD
-              return (
-                <div className="pt-4 border-t border-gray-200">
-                  {/* Generate Optimized Routes Button */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowOptimizedRoutes(!showOptimizedRoutes)
-                    }}
-                    className="w-full px-4 py-2 bg-black text-white text-sm font-medium rounded-lg hover:bg-gray-900 transition-colors mb-4"
-                  >
-                    Generate optimized routes
-                  </button>
+              {optimizeError && (
+                <div className="mt-3 text-xs text-red-600">
+                  {optimizeError}
+                </div>
+              )}
 
-                  {/* Route Option Cards */}
-                  {showOptimizedRoutes && (
-                    <div className="mb-4 space-y-4">
-                      <RouteOptionCard
-                        title="Standard Route"
-                        description="Scheduled pickup time"
-                        distance={24.2}
-                        estimatedTime={0.5}
-                        cost={164.52}
-                        optimizationLevel="good"
-                        departureTime="Dec 13, 5:31 PM"
-                        arrivalTime="Dec 13, 6:00 PM"
-                      />
-                      <RouteOptionCard
-                        title="Express Route"
-                        description="Faster delivery with priority handling"
-                        distance={22.8}
-                        estimatedTime={0.4}
-                        cost={198.75}
-                        optimizationLevel="optimal"
-                        departureTime="Dec 13, 5:15 PM"
-                        arrivalTime="Dec 13, 5:39 PM"
-                      />
-                      <RouteOptionCard
-                        title="Economy Route"
-                        description="Most cost-effective option"
-                        distance={26.5}
-                        estimatedTime={0.7}
-                        cost={142.2}
-                        optimizationLevel="standard"
-                        departureTime="Dec 13, 5:45 PM"
-                        arrivalTime="Dec 13, 6:27 PM"
-                      />
-                    </div>
-                  )}
-
-                  <h3 className="text-sm font-semibold text-gray-900 mb-3">Cost Estimate</h3>
-                  <div className="flex items-center gap-4">
-                    <div className="flex-1 p-3 bg-green-50 rounded-lg border border-green-200">
-                      <div>
-                        <span className="text-xs font-medium text-gray-700">Our Cost</span>
-                        <div className="text-lg font-bold text-green-700 mt-0.5">${costs.ourCost.toFixed(2)}</div>
-                        <div className="text-xs text-gray-500 mt-0.5">
-                          {costs.distanceMiles.toFixed(1)} mi × {costs.weightTons.toFixed(1)} tons × ${PRICING.STANDARD.toFixed(2)}/ton-mi
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex-1 p-3 bg-gray-50 rounded-lg border border-gray-200">
-                      <div>
-                        <span className="text-xs font-medium text-gray-700">Competitor</span>
-                        <div className="text-lg font-bold text-gray-600 mt-0.5 line-through">${costs.competitorCost.toFixed(2)}</div>
-                        <div className="text-xs text-gray-500 mt-0.5">
-                          {costs.competitorDistanceMiles.toFixed(1)} mi × {costs.weightTons.toFixed(1)} tons × ${PRICING.COMPETITOR.toFixed(2)}/ton-mi
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex-1 p-3 bg-blue-50 rounded-lg border border-blue-200">
-                      <div>
-                        <span className="text-xs font-medium text-gray-700">You Save</span>
-                        <div className="text-lg font-bold text-blue-700 mt-0.5">
-                          ${costs.savings.toFixed(2)}
-                        </div>
-                        <div className="text-sm font-semibold text-blue-600 mt-0.5">
-                          {costs.savingsPercent}% less than competitors
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-=======
               {/* Route Option Cards */}
-              {showOptimizedRoutes && (
+              {showOptimizedRoutes && optimizedRouteOptions && (
                 <div className="mt-4 space-y-4">
-                  <RouteOptionCard
-                    title="Standard Route"
-                    description="Scheduled pickup time"
-                    distance={24.2}
-                    estimatedTime={0.5}
-                    cost={164.52}
-                    optimizationLevel="good"
-                    departureTime="Dec 13, 5:31 PM"
-                    arrivalTime="Dec 13, 6:00 PM"
-                  />
-                  <RouteOptionCard
-                    title="Express Route"
-                    description="Faster delivery with priority handling"
-                    distance={22.8}
-                    estimatedTime={0.4}
-                    cost={198.75}
-                    optimizationLevel="optimal"
-                    departureTime="Dec 13, 5:15 PM"
-                    arrivalTime="Dec 13, 5:39 PM"
-                  />
-                  <RouteOptionCard
-                    title="Economy Route"
-                    description="Most cost-effective option"
-                    distance={26.5}
-                    estimatedTime={0.7}
-                    cost={142.20}
-                    optimizationLevel="standard"
-                    departureTime="Dec 13, 5:45 PM"
-                    arrivalTime="Dec 13, 6:27 PM"
-                  />
->>>>>>> 9e835cc (new components to handle api responses)
+                  {optimizedRouteOptions.map((opt) => (
+                    <RouteOptionCard
+                      key={opt.key}
+                      title={opt.title}
+                      description={opt.description}
+                      distance={opt.distanceMiles}
+                      estimatedTime={opt.estimatedTimeHours}
+                      cost={opt.cost}
+                      optimizationLevel={opt.optimizationLevel}
+                      onClick={() => {
+                        if (!selectedRoute) return
+                        const updatedSelected: CustomerRoute = { ...selectedRoute, route: opt.route }
+                        setSelectedRoute(updatedSelected)
+                        onRouteSelect?.(updatedSelected)
+                      }}
+                    />
+                  ))}
                 </div>
               )}
             </div>
@@ -619,6 +664,8 @@ export default function CustomerRoutesList({ routes, onRouteSelect }: CustomerRo
             key={route.id}
             onClick={() => {
               setSelectedRoute(route)
+              setShowOptimizedRoutes(false)
+              setOptimizeError(null)
               // Always call onRouteSelect to update the map
               onRouteSelect?.(route)
             }}
@@ -632,15 +679,19 @@ export default function CustomerRoutesList({ routes, onRouteSelect }: CustomerRo
                 {/* Vehicle Image */}
                 <div className="flex-shrink-0 w-12 h-12 flex items-center justify-center bg-gray-50 rounded-lg border border-gray-200 overflow-hidden">
                   {route.vehicleImage ? (
-                    <img 
+                    <Image 
                       src={route.vehicleImage} 
                       alt={route.vehicleType || 'Vehicle'} 
+                      width={48}
+                      height={48}
                       className="w-full h-full object-cover"
                     />
                   ) : getVehicleImageSrc(route.vehicleType) ? (
-                    <img 
+                    <Image 
                       src={getVehicleImageSrc(route.vehicleType)!} 
                       alt={route.vehicleType || 'Vehicle'} 
+                      width={48}
+                      height={48}
                       className="w-full h-full object-cover"
                     />
                   ) : (

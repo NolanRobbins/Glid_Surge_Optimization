@@ -22,6 +22,9 @@ from typing import Dict, List, Tuple, Any, Optional
 
 import numpy as np
 import pandas as pd
+import time
+import json
+import subprocess
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -44,6 +47,68 @@ if torch.cuda.is_available():
     print(f"   GPU: {torch.cuda.get_device_name(0)}")
     print(f"   TF32 enabled for faster training")
 
+# Optional: NVML GPU telemetry (utilization + memory)
+_pynvml = None
+try:
+    import pynvml as _pynvml  # type: ignore
+    _pynvml.nvmlInit()
+    _NVML_HANDLE = _pynvml.nvmlDeviceGetHandleByIndex(0)
+    _HAS_NVML = True
+except Exception:
+    _NVML_HANDLE = None
+    _HAS_NVML = False
+
+
+def get_gpu_telemetry() -> Dict[str, float]:
+    """Best-effort GPU telemetry snapshot (safe even if NVML unavailable)."""
+    out: Dict[str, float] = {}
+    if not torch.cuda.is_available():
+        return out
+
+    # Torch CUDA memory (bytes)
+    try:
+        out["torch_mem_allocated_mib"] = float(torch.cuda.memory_allocated() / (1024**2))
+        out["torch_mem_reserved_mib"] = float(torch.cuda.memory_reserved() / (1024**2))
+        out["torch_max_mem_allocated_mib"] = float(torch.cuda.max_memory_allocated() / (1024**2))
+        out["torch_max_mem_reserved_mib"] = float(torch.cuda.max_memory_reserved() / (1024**2))
+    except Exception:
+        pass
+
+    # NVML utilization + memory
+    if _HAS_NVML and _NVML_HANDLE is not None:
+        try:
+            util = _pynvml.nvmlDeviceGetUtilizationRates(_NVML_HANDLE)  # type: ignore[union-attr]
+            mem = _pynvml.nvmlDeviceGetMemoryInfo(_NVML_HANDLE)  # type: ignore[union-attr]
+            out["nvml_gpu_util_pct"] = float(util.gpu)
+            out["nvml_mem_util_pct"] = float(util.memory)
+            out["nvml_mem_used_mib"] = float(mem.used / (1024**2))
+            out["nvml_mem_total_mib"] = float(mem.total / (1024**2))
+        except Exception:
+            pass
+
+    # Fallback: query utilization via nvidia-smi (works even when NVML init is flaky in some containers)
+    if "nvml_gpu_util_pct" not in out:
+        try:
+            # nounits gives plain numbers, easier to parse
+            cmd = [
+                "nvidia-smi",
+                "--query-gpu=utilization.gpu,utilization.memory,memory.used,memory.total",
+                "--format=csv,noheader,nounits",
+            ]
+            raw = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True).strip().splitlines()
+            if raw:
+                # util_gpu, util_mem, mem_used, mem_total
+                parts = [p.strip() for p in raw[0].split(",")]
+                if len(parts) >= 4:
+                    out["smi_gpu_util_pct"] = float(parts[0])
+                    out["smi_mem_util_pct"] = float(parts[1])
+                    # reported in MiB
+                    out["smi_mem_used_mib"] = float(parts[2])
+                    out["smi_mem_total_mib"] = float(parts[3])
+        except Exception:
+            pass
+    return out
+
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
@@ -59,6 +124,11 @@ CONFIGS = {
         'truck_sample': 0.3,
         'temporal_window': 365,  # Use last 1 year
         'min_history_days': 30,  # Need 30 days of history for features
+        # Route-optimization loss proxy configuration
+        'route_distance_miles': 45.0,
+        'containers_per_step': 100.0,
+        'loss_mode': 'route_cost',     # 'route_cost' (default) or 'surge_mse'
+        'surge_loss_weight': 0.10,     # keeps surge calibrated while optimizing route cost
     },
     'medium': {
         'hidden_channels': 512,
@@ -317,51 +387,42 @@ def prepare_temporal_dataset(
     samples = []
     ports = sorted(port_df['portname'].unique())
     print(f"  Ports in dataset: {len(ports)}")
-    
-    for date in tqdm(valid_dates, desc="  Building temporal samples"):
-        # Get data for this date
-        day_data = port_df[port_df['date'] == date]
-        
-        # Get future date for labels
-        future_date = date + pd.Timedelta(days=horizon_days)
-        future_data = port_df[port_df['date'] == future_date]
-        
-        if len(future_data) < len(ports) * 0.5:  # Need at least 50% of ports
+
+    # Vectorized label creation: label = future surge at (t + horizon_days)
+    # This avoids O(num_dates) full-data scans.
+    port_df = port_df.sort_values(['portname', 'date']).copy()
+    port_df['label'] = port_df.groupby('portname')['surge'].shift(-horizon_days)
+
+    # Filter to valid training dates and rows with labels
+    port_df = port_df[port_df['date'].isin(valid_dates)].copy()
+    port_df = port_df.dropna(subset=['label'])
+
+    # Fill NaNs in feature columns (lags/rolling/std/etc.) similar to previous np.nan_to_num behavior
+    port_df[ts_feature_cols] = port_df[ts_feature_cols].fillna(0.0)
+
+    # Group by date to build samples (each group is ~106 rows)
+    for date, g in tqdm(port_df.groupby('date', sort=True), desc="  Building temporal samples"):
+        # Need at least 50% of ports for this date
+        if len(g) < len(ports) * 0.5:
             continue
-        
-        # Build feature matrix for this date
-        features_list = []
-        labels_list = []
-        port_mask = []
-        
-        for port in ports:
-            port_today = day_data[day_data['portname'] == port]
-            port_future = future_data[future_data['portname'] == port]
-            
-            if len(port_today) == 0 or len(port_future) == 0:
-                continue
-            
-            # Time-series features (17 features)
-            ts_feats = port_today[ts_feature_cols].values[0]
-            ts_feats = np.nan_to_num(ts_feats, 0)
-            
-            # Graph features (5 features)
-            graph_feats = graph_features.get(port, np.zeros(5))
-            
-            # Combine features (22 total)
-            port_features = np.concatenate([ts_feats, graph_feats])
-            features_list.append(port_features)
-            
-            # Label: future surge
-            labels_list.append(port_future['surge'].values[0])
-            port_mask.append(port)
-        
-        if len(features_list) > 10:  # Need at least 10 ports
+
+        ports_list = g['portname'].tolist()
+
+        ts_feats = g[ts_feature_cols].to_numpy(dtype=np.float32, copy=True)
+        labels_arr = g['label'].to_numpy(dtype=np.float32, copy=True)
+
+        # Stack graph features for these ports
+        graph_feats = np.stack([graph_features.get(p, np.zeros(5, dtype=np.float32)) for p in ports_list]).astype(np.float32)
+
+        # Combine features (22 total)
+        feats = np.concatenate([ts_feats, graph_feats], axis=1).astype(np.float32)
+
+        if feats.shape[0] > 10:  # Need at least 10 ports
             samples.append({
                 'date': date,
-                'features': np.array(features_list, dtype=np.float32),
-                'labels': np.array(labels_list, dtype=np.float32),
-                'ports': port_mask
+                'features': feats,
+                'labels': labels_arr,
+                'ports': ports_list
             })
     
     print(f"  Total temporal samples: {len(samples)}")
@@ -385,6 +446,58 @@ def prepare_temporal_dataset(
 # TRAINING - TEMPORAL APPROACH
 # ============================================================================
 
+def compute_route_objective_from_surge(
+    surge: torch.Tensor,
+    distance_miles: float,
+    containers: float,
+    *,
+    storage_per_hour: float = 15.0,
+    empty_mile_cost_per_mile: float = 2.0,
+    late_penalty: float = 250.0,
+    glid_energy_per_mile: float = 0.15,
+    base_dwell_hours: float = 12.0,
+    dwell_surge_scale_hours: float = 36.0,
+    base_empty_mile_pct: float = 0.10,
+    empty_mile_surge_scale: float = 0.25,
+    base_late_pct: float = 0.05,
+    late_surge_scale: float = 0.20,
+    dwell_w: float = 0.4,
+    empty_w: float = 0.3,
+    late_w: float = 0.2,
+    energy_w: float = 0.1,
+) -> torch.Tensor:
+    """
+    Differentiable proxy for our route optimization objective.
+
+    Uses the same components we present in the demo (dwell/storage, empty miles,
+    late penalties, energy) but computed as expected costs (no integer rounding),
+    so it remains fully differentiable.
+
+    Returns a per-sample objective in $/container (normalized).
+    """
+    s = surge.view(-1).clamp(0.0, 1.0)
+    rt_miles = 2.0 * float(distance_miles)
+    cont = float(containers)
+
+    dwell_hours = base_dwell_hours + dwell_surge_scale_hours * s
+    empty_pct = (base_empty_mile_pct + empty_mile_surge_scale * s).clamp(0.0, 1.0)
+    late_pct = (base_late_pct + late_surge_scale * s).clamp(0.0, 1.0)
+
+    dwell_cost = cont * dwell_hours * storage_per_hour
+    empty_cost = cont * (rt_miles * empty_pct) * empty_mile_cost_per_mile
+    penalty_cost = cont * late_pct * late_penalty
+    energy_cost = cont * rt_miles * glid_energy_per_mile
+
+    objective = (
+        dwell_w * dwell_cost +
+        empty_w * empty_cost +
+        late_w * penalty_cost +
+        energy_w * energy_cost
+    )
+
+    return objective / max(cont, 1.0)
+
+
 def train_temporal_model(
     model: nn.Module,
     train_data: List[Dict],
@@ -393,7 +506,12 @@ def train_temporal_model(
     full_node_features: torch.Tensor,
     port_indices: Dict[str, int],
     cfg: Dict,
-    horizon: int
+    horizon: int,
+    *,
+    run_id: str,
+    output_dir: Path,
+    checkpoint_each_epoch: bool = True,
+    log_gpu_stats: bool = True,
 ) -> Dict:
     """
     Train model on temporal samples.
@@ -405,11 +523,18 @@ def train_temporal_model(
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg['lr'], weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg['epochs'])
     
-    criterion = nn.MSELoss()
+    mse = nn.MSELoss()
     
     best_val_loss = float('inf')
     best_model_state = None
-    history = {'train_loss': [], 'val_loss': [], 'val_mae': []}
+    history = {
+        'train_loss': [],
+        'val_loss': [],
+        'val_mae': [],
+        'train_route_cost_mae': [],
+        'val_route_cost_mae': [],
+        'gpu': [],
+    }
     
     edge_index = edge_index.to(device)
     
@@ -417,11 +542,13 @@ def train_temporal_model(
     print(f"   Train samples: {len(train_data)}, Val samples: {len(val_data)}")
     
     for epoch in range(cfg['epochs']):
+        epoch_t0 = time.time()
         # =====================
         # TRAINING
         # =====================
         model.train()
         train_losses = []
+        train_route_cost_maes = []
         
         # Shuffle training data
         np.random.shuffle(train_data)
@@ -429,28 +556,55 @@ def train_temporal_model(
         for sample in train_data:
             # Update node features for ports with this sample's features
             x = full_node_features.clone().to(device)
-            
+
+            idxs = []
+            feats = []
+            labs = []
             for i, port_name in enumerate(sample['ports']):
-                if port_name in port_indices:
-                    idx = port_indices[port_name]
-                    x[idx, :sample['features'].shape[1]] = torch.tensor(sample['features'][i])
-            
+                idx = port_indices.get(port_name)
+                if idx is None:
+                    continue
+                idxs.append(idx)
+                feats.append(sample['features'][i])
+                labs.append(sample['labels'][i])
+
+            if not idxs:
+                continue
+
+            idxs_t = torch.tensor(idxs, dtype=torch.long, device=device)
+            feats_t = torch.as_tensor(np.asarray(feats, dtype=np.float32), device=device)
+            labs_t = torch.as_tensor(np.asarray(labs, dtype=np.float32), device=device)
+
+            x[idxs_t, :feats_t.shape[1]] = feats_t
+
             # Labels for port nodes only
             y = torch.zeros(len(full_node_features), device=device)
             mask = torch.zeros(len(full_node_features), dtype=torch.bool, device=device)
-            
-            for i, port_name in enumerate(sample['ports']):
-                if port_name in port_indices:
-                    idx = port_indices[port_name]
-                    y[idx] = sample['labels'][i]
-                    mask[idx] = True
+            y[idxs_t] = labs_t
+            mask[idxs_t] = True
             
             optimizer.zero_grad()
             
             outputs = model(x, edge_index)
             
-            # Loss only on port nodes with labels
-            loss = criterion(outputs['port_surge'][mask].squeeze(), y[mask])
+            pred_surge = outputs['port_surge'][mask].squeeze()
+            true_surge = y[mask]
+
+            if cfg.get('loss_mode', 'route_cost') == 'route_cost':
+                pred_cost = compute_route_objective_from_surge(
+                    pred_surge,
+                    distance_miles=float(cfg.get('route_distance_miles', 45.0)),
+                    containers=float(cfg.get('containers_per_step', 100.0)),
+                )
+                true_cost = compute_route_objective_from_surge(
+                    true_surge,
+                    distance_miles=float(cfg.get('route_distance_miles', 45.0)),
+                    containers=float(cfg.get('containers_per_step', 100.0)),
+                )
+                loss = mse(pred_cost, true_cost) + float(cfg.get('surge_loss_weight', 0.10)) * mse(pred_surge, true_surge)
+                train_route_cost_maes.append(torch.abs(pred_cost - true_cost).mean().item())
+            else:
+                loss = mse(pred_surge, true_surge)
             
             if not torch.isnan(loss):
                 loss.backward()
@@ -464,29 +618,59 @@ def train_temporal_model(
         model.eval()
         val_losses = []
         val_maes = []
+        val_route_cost_maes = []
         
         with torch.no_grad():
             for sample in val_data:
                 x = full_node_features.clone().to(device)
-                
+
+                idxs = []
+                feats = []
+                labs = []
                 for i, port_name in enumerate(sample['ports']):
-                    if port_name in port_indices:
-                        idx = port_indices[port_name]
-                        x[idx, :sample['features'].shape[1]] = torch.tensor(sample['features'][i])
-                
+                    idx = port_indices.get(port_name)
+                    if idx is None:
+                        continue
+                    idxs.append(idx)
+                    feats.append(sample['features'][i])
+                    labs.append(sample['labels'][i])
+
+                if not idxs:
+                    continue
+
+                idxs_t = torch.tensor(idxs, dtype=torch.long, device=device)
+                feats_t = torch.as_tensor(np.asarray(feats, dtype=np.float32), device=device)
+                labs_t = torch.as_tensor(np.asarray(labs, dtype=np.float32), device=device)
+
+                x[idxs_t, :feats_t.shape[1]] = feats_t
+
                 y = torch.zeros(len(full_node_features), device=device)
                 mask = torch.zeros(len(full_node_features), dtype=torch.bool, device=device)
-                
-                for i, port_name in enumerate(sample['ports']):
-                    if port_name in port_indices:
-                        idx = port_indices[port_name]
-                        y[idx] = sample['labels'][i]
-                        mask[idx] = True
+                y[idxs_t] = labs_t
+                mask[idxs_t] = True
                 
                 outputs = model(x, edge_index)
                 
-                val_loss = criterion(outputs['port_surge'][mask].squeeze(), y[mask])
-                val_mae = torch.abs(outputs['port_surge'][mask].squeeze() - y[mask]).mean()
+                pred_surge = outputs['port_surge'][mask].squeeze()
+                true_surge = y[mask]
+
+                if cfg.get('loss_mode', 'route_cost') == 'route_cost':
+                    pred_cost = compute_route_objective_from_surge(
+                        pred_surge,
+                        distance_miles=float(cfg.get('route_distance_miles', 45.0)),
+                        containers=float(cfg.get('containers_per_step', 100.0)),
+                    )
+                    true_cost = compute_route_objective_from_surge(
+                        true_surge,
+                        distance_miles=float(cfg.get('route_distance_miles', 45.0)),
+                        containers=float(cfg.get('containers_per_step', 100.0)),
+                    )
+                    val_loss = mse(pred_cost, true_cost) + float(cfg.get('surge_loss_weight', 0.10)) * mse(pred_surge, true_surge)
+                    val_route_cost_maes.append(torch.abs(pred_cost - true_cost).mean().item())
+                else:
+                    val_loss = mse(pred_surge, true_surge)
+
+                val_mae = torch.abs(pred_surge - true_surge).mean()
                 
                 if not torch.isnan(val_loss):
                     val_losses.append(val_loss.item())
@@ -499,22 +683,71 @@ def train_temporal_model(
         avg_train_loss = np.mean(train_losses) if train_losses else 0
         avg_val_loss = np.mean(val_losses) if val_losses else 0
         avg_val_mae = np.mean(val_maes) if val_maes else 0
+        avg_train_route_cost_mae = np.mean(train_route_cost_maes) if train_route_cost_maes else 0
+        avg_val_route_cost_mae = np.mean(val_route_cost_maes) if val_route_cost_maes else 0
         
         history['train_loss'].append(avg_train_loss)
         history['val_loss'].append(avg_val_loss)
         history['val_mae'].append(avg_val_mae)
+        history['train_route_cost_mae'].append(avg_train_route_cost_mae)
+        history['val_route_cost_mae'].append(avg_val_route_cost_mae)
+
+        epoch_secs = time.time() - epoch_t0
+        gpu_stats = get_gpu_telemetry() if log_gpu_stats else {}
+        gpu_stats.update({
+            "epoch": float(epoch + 1),
+            "epoch_seconds": float(epoch_secs),
+            "horizon_hours": float(horizon),
+        })
+        history['gpu'].append(gpu_stats)
         
         # Save best model
         if avg_val_loss < best_val_loss and avg_val_loss > 0:
             best_val_loss = avg_val_loss
             best_model_state = model.state_dict().copy()
+
+        # Checkpoint each epoch (so we always have recoverable artifacts)
+        if checkpoint_each_epoch:
+            ckpt_path = output_dir / f"gnn_multitask_v3_{horizon}h_{run_id}_epoch{epoch+1}.pt"
+            torch.save({
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'config': cfg,
+                'run_id': run_id,
+                'horizon': horizon,
+                'epoch': epoch + 1,
+                'metrics': {
+                    'train_loss': avg_train_loss,
+                    'val_loss': avg_val_loss,
+                    'val_mae': avg_val_mae,
+                    'train_route_cost_mae': avg_train_route_cost_mae,
+                    'val_route_cost_mae': avg_val_route_cost_mae,
+                },
+                'gpu': gpu_stats,
+                'timestamp': datetime.now().isoformat(),
+            }, ckpt_path)
         
         # Print progress
         if (epoch + 1) % 5 == 0 or epoch == 0:
-            print(f"  Epoch {epoch+1:3d}/{cfg['epochs']}: "
-                  f"train_loss={avg_train_loss:.4f}, "
-                  f"val_loss={avg_val_loss:.4f}, "
-                  f"val_mae={avg_val_mae:.4f}")
+            extra = ""
+            if cfg.get('loss_mode', 'route_cost') == 'route_cost':
+                extra = f", val_route_cost_mae=${avg_val_route_cost_mae:,.2f}/container"
+            gpu_note = ""
+            if log_gpu_stats and gpu_stats:
+                util = gpu_stats.get("nvml_gpu_util_pct")
+                mem = gpu_stats.get("nvml_mem_used_mib")
+                if util is not None or mem is not None:
+                    gpu_note = f" | GPU util={util:.0f}% mem={mem:.0f}MiB"
+            print(
+                f"  Epoch {epoch+1:3d}/{cfg['epochs']}: "
+                f"train_loss={avg_train_loss:.4f}, "
+                f"val_loss={avg_val_loss:.4f}, "
+                f"val_mae={avg_val_mae:.4f}"
+                f"{extra}"
+                f" | epoch_time={epoch_secs:.1f}s"
+                f"{gpu_note}"
+            )
     
     # Restore best model
     if best_model_state is not None:
@@ -541,19 +774,31 @@ def evaluate_on_test(
     with torch.no_grad():
         for sample in test_data:
             x = full_node_features.clone().to(device)
-            
+
+            idxs = []
+            feats = []
+            labs = []
             for i, port_name in enumerate(sample['ports']):
-                if port_name in port_indices:
-                    idx = port_indices[port_name]
-                    x[idx, :sample['features'].shape[1]] = torch.tensor(sample['features'][i])
-            
+                idx = port_indices.get(port_name)
+                if idx is None:
+                    continue
+                idxs.append(idx)
+                feats.append(sample['features'][i])
+                labs.append(sample['labels'][i])
+
+            if not idxs:
+                continue
+
+            idxs_t = torch.tensor(idxs, dtype=torch.long, device=device)
+            feats_t = torch.as_tensor(np.asarray(feats, dtype=np.float32), device=device)
+            x[idxs_t, :feats_t.shape[1]] = feats_t
+
             outputs = model(x, edge_index)
-            
-            for i, port_name in enumerate(sample['ports']):
-                if port_name in port_indices:
-                    idx = port_indices[port_name]
-                    all_preds.append(outputs['port_surge'][idx].item())
-                    all_labels.append(sample['labels'][i])
+
+            # Collect predictions for labeled ports
+            preds_t = outputs['port_surge'][idxs_t].squeeze()
+            all_preds.extend(preds_t.detach().cpu().numpy().tolist())
+            all_labels.extend(labs)
     
     preds = np.array(all_preds)
     labels = np.array(all_labels)
@@ -583,6 +828,8 @@ if __name__ == "__main__":
     parser.add_argument('--config', type=str, default='fast', choices=['fast', 'medium', 'full'])
     parser.add_argument('--horizons', type=str, default='24,48,72')
     parser.add_argument('--epochs', type=int, default=None)
+    parser.add_argument('--checkpoint_each_epoch', action='store_true', help="Write a checkpoint after each epoch.")
+    parser.add_argument('--log_gpu_stats', action='store_true', help="Log GPU utilization + memory each epoch (NVML + torch).")
     args = parser.parse_args()
     
     cfg = CONFIGS[args.config].copy()
@@ -598,6 +845,8 @@ if __name__ == "__main__":
     print(f"Horizons: {horizons}")
     print(f"Epochs: {cfg['epochs']}")
     print()
+
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
     
     # =========================================================================
     # LOAD DATA
@@ -696,6 +945,23 @@ if __name__ == "__main__":
     
     output_dir = Path(__file__).parent / "output" / "checkpoints"
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write run metadata (handy for demo + reproducibility)
+    logs_dir = Path(__file__).parent / "output" / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    meta_path = logs_dir / f"train_gnn_multitask_v3_{run_id}_meta.json"
+    try:
+        with open(meta_path, "w") as f:
+            json.dump({
+                "run_id": run_id,
+                "config_name": args.config,
+                "cfg": cfg,
+                "horizons": horizons,
+                "timestamp": datetime.now().isoformat(),
+            }, f, indent=2)
+        print(f"📝 Wrote run metadata: {meta_path}")
+    except Exception:
+        pass
     
     for horizon in horizons:
         print("\n" + "=" * 70)
@@ -726,7 +992,11 @@ if __name__ == "__main__":
         # Train
         history = train_temporal_model(
             model, train_data, val_data, edge_index, 
-            full_node_features, port_indices, cfg, horizon
+            full_node_features, port_indices, cfg, horizon,
+            run_id=run_id,
+            output_dir=output_dir,
+            checkpoint_each_epoch=bool(args.checkpoint_each_epoch),
+            log_gpu_stats=bool(args.log_gpu_stats),
         )
         
         # Evaluate on test set

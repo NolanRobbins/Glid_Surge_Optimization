@@ -1,6 +1,7 @@
 'use client'
 
 import React, { useState, useEffect, useRef, useMemo } from 'react'
+import Image from 'next/image'
 import { RoutePoint, Route, calculateDistance } from '@/lib/routeCalculation'
 import { calculateUnloadingRate, calculateExpectedDelay } from '@/lib/portInfrastructure'
 import { getDrivingRoute, getAlternativeRoutes, DirectionsRoute } from '@/lib/mapboxDirections'
@@ -10,6 +11,50 @@ import { calculatePortVesselMetrics } from '@/lib/vesselMetrics'
 import { PortDatabaseEntry } from '@/api/portDatabaseService'
 import { calculateTonMileCost, getPricingForRouteType } from '@/lib/pricing'
 import RouteOptionCard from './RouteOptionCard'
+import syntheticData from '@/data/syntheticCustomerRoutes.json'
+
+const DEFAULT_PICKUP_ROUTE_ID = '16'
+
+const DEFAULT_PICKUP_ROUTE_RAW = (
+  (syntheticData as unknown as { routes?: unknown[] })?.routes || []
+).find((r: unknown) => String((r as { id?: unknown })?.id) === DEFAULT_PICKUP_ROUTE_ID) as
+  | {
+      originPort?: unknown
+      destinationPort?: unknown
+      route?: {
+        origin?: { coordinates?: unknown }
+        destination?: { coordinates?: unknown; name?: unknown }
+      }
+    }
+  | undefined
+
+const DEFAULT_PICKUP_LOCATION_FROM_ROUTE =
+  typeof DEFAULT_PICKUP_ROUTE_RAW?.originPort === 'string' ? DEFAULT_PICKUP_ROUTE_RAW.originPort : null
+
+const DEFAULT_PICKUP_COORDINATES_FROM_ROUTE = (() => {
+  const coords = DEFAULT_PICKUP_ROUTE_RAW?.route?.origin?.coordinates
+  if (!Array.isArray(coords) || coords.length < 2) return null
+  const lon = Number(coords[0])
+  const lat = Number(coords[1])
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null
+  return [lon, lat] as [number, number]
+})()
+
+const DEFAULT_DESTINATION_LOCATION_FROM_ROUTE =
+  typeof DEFAULT_PICKUP_ROUTE_RAW?.destinationPort === 'string'
+    ? DEFAULT_PICKUP_ROUTE_RAW.destinationPort
+    : typeof DEFAULT_PICKUP_ROUTE_RAW?.route?.destination?.name === 'string'
+      ? DEFAULT_PICKUP_ROUTE_RAW.route.destination.name
+      : null
+
+const DEFAULT_DESTINATION_COORDINATES_FROM_ROUTE = (() => {
+  const coords = DEFAULT_PICKUP_ROUTE_RAW?.route?.destination?.coordinates
+  if (!Array.isArray(coords) || coords.length < 2) return null
+  const lon = Number(coords[0])
+  const lat = Number(coords[1])
+  if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null
+  return [lon, lat] as [number, number]
+})()
 
 // RouteOptionsList interfaces and types - we'll recreate the component inline
 interface TrafficLevel {
@@ -616,10 +661,18 @@ interface GeocodeResult {
 }
 
 export default function ContainerPickupForm({ onRouteCreate, allPorts = new Map(), trafficData = [], onRouteOptionSelect, onStepChange, initialStep = 'pickup' }: ContainerPickupFormProps) {
-  const [pickupLocation, setPickupLocation] = useState('Los Angeles, CA')
-  const [pickupCoordinates, setPickupCoordinates] = useState<[number, number] | null>([-118.2437, 34.0522]) // Los Angeles coordinates
-  const [destinationLocation, setDestinationLocation] = useState('Fleet Yards Inc./DAMCO DISTRIBUTION INC')
-  const [destinationCoordinates, setDestinationCoordinates] = useState<[number, number] | null>([-118.1937, 33.7701]) // Long Beach coordinates (will be updated when geocoded)
+  // Step 1 default pickup is route "16" (from synthetic customer routes) to match the demo baseline.
+  const [pickupLocation, setPickupLocation] = useState(DEFAULT_PICKUP_LOCATION_FROM_ROUTE ?? 'Los Angeles, CA')
+  const [pickupCoordinates, setPickupCoordinates] = useState<[number, number] | null>(
+    DEFAULT_PICKUP_COORDINATES_FROM_ROUTE ?? ([-118.2437, 34.0522] as [number, number])
+  )
+  // Ensure compute endpoint routes to Fleet Yards (not a generic LA/Long Beach centroid).
+  const [destinationLocation, setDestinationLocation] = useState(
+    DEFAULT_DESTINATION_LOCATION_FROM_ROUTE ?? 'Fleet Yards Inc./DAMCO DISTRIBUTION INC'
+  )
+  const [destinationCoordinates, setDestinationCoordinates] = useState<[number, number] | null>(
+    DEFAULT_DESTINATION_COORDINATES_FROM_ROUTE ?? ([-118.1937, 33.7701] as [number, number])
+  )
   const [containerNumber, setContainerNumber] = useState('')
   const [containerWeight, setContainerWeight] = useState<string>('') // in tons
   const [pickupDate, setPickupDate] = useState<string>('') // ISO date string
@@ -1030,24 +1083,101 @@ export default function ContainerPickupForm({ onRouteCreate, allPorts = new Map(
         distance: calculateDistance(pickupCoordinates, destinationCoordinates),
       }
 
-      // Try to get driving route
+      // Baseline route (Mapbox driving) to compare against computed route
       let finalRoute = initialRoute
+      let baselineRoute: Route | null = null
+      let computedTimeHours: number | null = null
+
       try {
-        const drivingRoute = await getDrivingRoute(pickupCoordinates, destinationCoordinates)
-        if (drivingRoute && drivingRoute.geometry && drivingRoute.geometry.coordinates && drivingRoute.geometry.coordinates.length > 0) {
-          // Mapbox returns distance in meters, convert to kilometers
-          const distanceInKm = drivingRoute.distance / 1000
+        const baselineDriving = await getDrivingRoute(pickupCoordinates, destinationCoordinates)
+        if (
+          baselineDriving &&
+          baselineDriving.geometry &&
+          baselineDriving.geometry.coordinates &&
+          baselineDriving.geometry.coordinates.length > 0
+        ) {
+          baselineRoute = {
+            ...initialRoute,
+            coordinates: baselineDriving.geometry.coordinates as [number, number][],
+            distance: baselineDriving.distance / 1000, // meters -> km
+          }
+        }
+      } catch (baselineErr) {
+        console.warn('Could not compute baseline driving route:', baselineErr)
+      }
+
+      // Try to get an optimized route from the API (preferred)
+      try {
+        const res = await fetch('/api/routes/compute', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            origin: pickupCoordinates,
+            destination: destinationCoordinates,
+            optimize_for: 'time',
+            mode: 'auto',
+          }),
+        })
+
+        if (!res.ok) {
+          throw new Error(await res.text())
+        }
+
+        const data = await res.json()
+        const coordsRaw: unknown = data?.route?.geometry?.coordinates
+        const coords =
+          Array.isArray(coordsRaw)
+            ? (coordsRaw
+                .filter((p: unknown) => Array.isArray(p) && p.length >= 2)
+                .map((p: unknown) => [Number((p as number[])[0]), Number((p as number[])[1])] as [number, number]))
+            : []
+
+        const distanceMiles = Number(
+          data?.route?.properties?.total_distance_miles ?? data?.metrics?.total_distance_miles ?? 0
+        )
+        const distanceInKm = Number.isFinite(distanceMiles) ? distanceMiles * 1.60934 : 0
+
+        const timeHours = Number(
+          data?.route?.properties?.total_time_hours ?? data?.metrics?.total_time_hours ?? 0
+        )
+        computedTimeHours = Number.isFinite(timeHours) ? timeHours : null
+
+        if (coords.length >= 2) {
           finalRoute = {
             ...initialRoute,
-            coordinates: drivingRoute.geometry.coordinates as [number, number][],
-            distance: distanceInKm, // Now in kilometers
+            coordinates: coords,
+            distance: distanceInKm > 0 ? distanceInKm : initialRoute.distance,
           }
-          console.log('Using driving route with', finalRoute.coordinates.length, 'coordinates')
+          console.log('Using /routes/compute route with', finalRoute.coordinates.length, 'coordinates')
         } else {
-          console.log('Driving route not available, using straight line route')
+          console.log('/routes/compute returned no coordinates, falling back')
         }
       } catch (error) {
-        console.warn('Could not fetch driving route, using straight line:', error)
+        console.warn('Could not compute route via API, falling back to Mapbox/straight line:', error)
+
+        // Fallback: Try to get driving route via Mapbox
+        try {
+          const drivingRoute = await getDrivingRoute(pickupCoordinates, destinationCoordinates)
+          if (
+            drivingRoute &&
+            drivingRoute.geometry &&
+            drivingRoute.geometry.coordinates &&
+            drivingRoute.geometry.coordinates.length > 0
+          ) {
+            // Mapbox returns distance in meters, convert to kilometers
+            const distanceInKm = drivingRoute.distance / 1000
+            finalRoute = {
+              ...initialRoute,
+              coordinates: drivingRoute.geometry.coordinates as [number, number][],
+              distance: distanceInKm, // Now in kilometers
+            }
+            console.log('Using driving route with', finalRoute.coordinates.length, 'coordinates')
+          } else {
+            console.log('Driving route not available, using straight line route')
+          }
+        } catch (mapboxError) {
+          console.warn('Could not fetch driving route, using straight line:', mapboxError)
+        }
       }
 
       // Ensure route has valid coordinates (fallback to initial route if needed)
@@ -1102,11 +1232,13 @@ export default function ContainerPickupForm({ onRouteCreate, allPorts = new Map(
         ? pickupDateTime 
         : new Date(Date.now() + 60 * 60 * 1000) // 1 hour from now if invalid
 
-      // Estimate delivery time based on route distance (assuming average speed)
-      const avgSpeedMph = 50 // Average speed in miles per hour
+      // Estimate delivery time (prefer API-computed time when available)
+      const avgSpeedMph = 50 // Fallback average speed in miles per hour
       const routeDistanceKm = finalRoute.distance && finalRoute.distance > 0 ? finalRoute.distance : 50 // Ensure we have a valid distance
       const routeDistanceMiles = routeDistanceKm * 0.621371
-      const transitHours = Math.max(0.1, routeDistanceMiles / avgSpeedMph) // Ensure at least 0.1 hours
+      const transitHours = computedTimeHours && computedTimeHours > 0
+        ? computedTimeHours
+        : Math.max(0.1, routeDistanceMiles / avgSpeedMph) // Ensure at least 0.1 hours
       const estimatedDelivery = new Date(validPickupTime.getTime() + transitHours * 60 * 60 * 1000)
       
       console.log('Estimated delivery calculation:', {
@@ -1118,6 +1250,16 @@ export default function ContainerPickupForm({ onRouteCreate, allPorts = new Map(
         timeDiff: estimatedDelivery.getTime() - validPickupTime.getTime()
       })
 
+      const isSameAsBaseline =
+        baselineRoute &&
+        finalRoute.coordinates?.length === baselineRoute.coordinates?.length &&
+        finalRoute.coordinates?.[0]?.[0] === baselineRoute.coordinates?.[0]?.[0] &&
+        finalRoute.coordinates?.[0]?.[1] === baselineRoute.coordinates?.[0]?.[1] &&
+        finalRoute.coordinates?.[finalRoute.coordinates.length - 1]?.[0] ===
+          baselineRoute.coordinates?.[baselineRoute.coordinates.length - 1]?.[0] &&
+        finalRoute.coordinates?.[finalRoute.coordinates.length - 1]?.[1] ===
+          baselineRoute.coordinates?.[baselineRoute.coordinates.length - 1]?.[1]
+
       const newRoute: CustomerRoute = {
         id: `route-${Date.now()}`,
         containerNumber: containerNumber || `${vehicleType === 'raden' ? 'RDN' : 'GLD'}${Math.floor(Math.random() * 10000000).toString().padStart(7, '0')}`,
@@ -1127,6 +1269,7 @@ export default function ContainerPickupForm({ onRouteCreate, allPorts = new Map(
         destinationPort: destinationLocation,
         status: 'scheduled',
         route: finalRoute,
+        competitorRoute: !isSameAsBaseline ? baselineRoute || undefined : undefined,
         estimatedDelivery,
         vehicleType,
       }
@@ -2319,9 +2462,11 @@ export default function ContainerPickupForm({ onRouteCreate, allPorts = new Map(
                                 {/* Raden Vehicle Card */}
                                 <div className="bg-white rounded-lg border-2 border-gray-200 p-4">
                                   <div className="flex items-start gap-3 mb-3">
-                                    <img
+                                    <Image
                                       src="/raden.png"
                                       alt="Raden"
+                                      width={48}
+                                      height={48}
                                       className="w-12 h-12 object-contain flex-shrink-0"
                                     />
                                     <div className="flex-1">
@@ -2362,9 +2507,11 @@ export default function ContainerPickupForm({ onRouteCreate, allPorts = new Map(
                                 {/* GlīderM Vehicle Card */}
                                 <div className="bg-white rounded-lg border-2 border-gray-200 p-4">
                                   <div className="flex items-start gap-3 mb-3">
-                                    <img
+                                    <Image
                                       src="/gliderm.png"
                                       alt="GlīderM"
+                                      width={48}
+                                      height={48}
                                       className="w-12 h-12 object-contain flex-shrink-0"
                                     />
                                     <div className="flex-1">

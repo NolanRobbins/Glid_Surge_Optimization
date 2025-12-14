@@ -9,10 +9,14 @@ import logging
 import os
 from typing import Any, Dict, List, Optional
 
-import httpx
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+
+try:
+    import httpx  # type: ignore
+except Exception:  # pragma: no cover
+    httpx = None  # type: ignore
 
 # LLM Server configuration
 # NIM uses port 8000, vLLM uses port 5000
@@ -76,6 +80,14 @@ You help users with:
 
 You have access to real-time route and surge data through tools. Always reason through complex queries.""",
 }
+
+
+def _require_httpx() -> None:
+    if httpx is None:
+        raise RuntimeError(
+            "LLM support requires the optional dependency 'httpx'. "
+            "Install it in the API container (pip install httpx) or disable LLM routes."
+        )
 
 
 # Tool definitions for agentic capabilities
@@ -160,6 +172,7 @@ class LLMService:
     """Service for interacting with the Nemotron 49B LLM."""
     
     def __init__(self, base_url: str = LLM_BASE_URL, model: str = LLM_MODEL):
+        _require_httpx()
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.client = httpx.AsyncClient(timeout=LLM_TIMEOUT)
@@ -323,6 +336,7 @@ def get_llm_service() -> LLMService:
     """Get or create the LLM service singleton."""
     global _llm_service
     if _llm_service is None:
+        _require_httpx()
         _llm_service = LLMService()
     return _llm_service
 

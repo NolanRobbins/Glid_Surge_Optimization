@@ -96,7 +96,7 @@ echo ""
 read -p "Pull Nemotron 49B NIM image now? This may take a while (~30GB). [y/N]: " PULL_IMAGE
 if [[ "$PULL_IMAGE" =~ ^[Yy]$ ]]; then
     echo -e "${BLUE}Pulling NIM image...${NC}"
-    docker pull nvcr.io/nim/nvidia/llama-3_3-nemotron-super-49b-v1:latest
+    docker pull nvcr.io/nim/nvidia/llama-3.3-nemotron-super-49b-v1:latest
     echo -e "${GREEN}✓${NC} Image pulled successfully"
 fi
 
