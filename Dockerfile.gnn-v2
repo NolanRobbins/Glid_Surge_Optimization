@@ -28,6 +28,9 @@ RUN pip install --no-cache-dir torch-geometric
 # Small extras used by this repo that may not be present in the base image
 RUN pip install --no-cache-dir openpyxl geopy
 
+# API/web stack for FastAPI service
+RUN pip install --no-cache-dir fastapi uvicorn[standard] pydantic requests aiohttp
+
 # Set environment variables
 ENV CUDA_HOME=/usr/local/cuda
 ENV PYTHONPATH=/workspace/src

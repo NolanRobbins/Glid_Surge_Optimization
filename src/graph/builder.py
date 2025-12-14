@@ -2,6 +2,7 @@
 Graph Builder for Multi-Modal Transportation Network
 =====================================================
 Constructs NetworkX graphs from rail and road data.
+Optimized for NVIDIA RAPIDS (cuML/cuDF) with CPU fallback.
 """
 
 import networkx as nx
@@ -12,9 +13,21 @@ from typing import Dict, List, Tuple, Optional, Any
 from shapely.geometry import Point
 from geopy.distance import geodesic
 from tqdm import tqdm
-
 import sys
 from pathlib import Path
+
+# GPU Acceleration Imports
+try:
+    import cudf
+    import cuml
+    from cuml.neighbors import NearestNeighbors as cuNearestNeighbors
+    HAS_GPU = True
+    print("🚀 NVIDIA RAPIDS detected: GPU acceleration enabled for graph building")
+except ImportError:
+    HAS_GPU = False
+    from scipy.spatial import cKDTree
+    print("⚠ NVIDIA RAPIDS not found: Falling back to CPU (KDTree)")
+
 sys.path.append(str(Path(__file__).parent.parent))
 from config import (
     GLID_CLIENTS, GLID_VEHICLE, RAIL_CLASS_CONSTRAINTS,
@@ -29,21 +42,21 @@ def build_rail_graph(
 ) -> nx.Graph:
     """
     Build a NetworkX graph from rail nodes and lines.
-    
-    Args:
-        nodes_gdf: GeoDataFrame of rail nodes
-        lines_gdf: GeoDataFrame of rail line segments
-        add_constraints: Whether to add rail class constraints
-        
-    Returns:
-        NetworkX Graph with nodes and edges
     """
     print("Building rail network graph...")
     G = nx.Graph()
     
     # Add nodes
     print("  Adding nodes...")
-    for idx, row in tqdm(nodes_gdf.iterrows(), total=len(nodes_gdf), desc="  Nodes"):
+    # Convert to pandas if it's a cudf DataFrame (NetworkX expects CPU objects)
+    if 'cudf' in sys.modules and isinstance(nodes_gdf, cudf.DataFrame):
+        nodes_iter = nodes_gdf.to_pandas().iterrows()
+        total_nodes = len(nodes_gdf)
+    else:
+        nodes_iter = nodes_gdf.iterrows()
+        total_nodes = len(nodes_gdf)
+
+    for idx, row in tqdm(nodes_iter, total=total_nodes, desc="  Nodes"):
         node_id = row['FRANODEID']
         G.add_node(
             node_id,
@@ -55,28 +68,27 @@ def build_rail_graph(
             passenger_station=row.get('PASSNGRSTN'),
         )
     
-    # Add edges (rail segments)
+    # Add edges
     print("  Adding edges...")
-    for idx, row in tqdm(lines_gdf.iterrows(), total=len(lines_gdf), desc="  Edges"):
+    if 'cudf' in sys.modules and isinstance(lines_gdf, cudf.DataFrame):
+        lines_iter = lines_gdf.to_pandas().iterrows()
+        total_lines = len(lines_gdf)
+    else:
+        lines_iter = lines_gdf.iterrows()
+        total_lines = len(lines_gdf)
+
+    for idx, row in tqdm(lines_iter, total=total_lines, desc="  Edges"):
         from_node = row['FRFRANODE']
         to_node = row['TOFRANODE']
         
-        # Skip if nodes don't exist
         if from_node not in G.nodes or to_node not in G.nodes:
             continue
         
-        # Calculate edge weight (distance in miles)
         distance_miles = row.get('MILES', 1.0)
-        
-        # Determine rail class and get constraints
         owner = row.get('RROWNER1', '')
         is_class1 = owner in CLASS_1_RAILROADS
-        
-        # Default to Class 3 constraints, Class 4 for Class I railroads
         rail_class = 4 if is_class1 else 3
         constraints = RAIL_CLASS_CONSTRAINTS.get(rail_class, RAIL_CLASS_CONSTRAINTS[3])
-        
-        # Calculate travel time based on speed limit
         travel_time_hours = distance_miles / constraints['max_speed_mph']
         
         edge_attrs = {
@@ -103,24 +115,22 @@ def add_location_nodes(
     locations: Dict[str, Dict],
     node_type: str = 'location'
 ) -> nx.Graph:
-    """
-    Add custom location nodes (ports, clients, terminals) to graph.
-    
-    Args:
-        G: Existing NetworkX graph
-        locations: Dictionary of locations with lat/lon
-        node_type: Type label for the nodes
-        
-    Returns:
-        Updated graph with new nodes
-    """
+    """Add custom location nodes (ports, clients, terminals) to graph."""
     for loc_id, loc_data in locations.items():
         node_id = f"{node_type}_{loc_id}"
+        # Store original name if available to avoid duplicates if ID changes
+        name = loc_data.get('name', loc_id)
+        
+        # Check if node already exists by name (handling potential re-runs)
+        existing_node = None
+        # Optimization: Don't iterate all nodes if we don't have to
+        # But here we rely on the caller to manage IDs correctly
+        
         G.add_node(
             node_id,
             lat=loc_data['lat'],
             lon=loc_data['lon'],
-            name=loc_data.get('name', loc_id),
+            name=name,
             node_type=node_type,
             **{k: v for k, v in loc_data.items() if k not in ['lat', 'lon', 'name']}
         )
@@ -137,51 +147,124 @@ def connect_locations_to_graph(
 ) -> nx.Graph:
     """
     Connect location nodes to nearest rail nodes via road edges.
-    
-    Args:
-        G: Graph with rail nodes and location nodes
-        locations: Dictionary of locations
-        node_type: Type of location nodes
-        max_connection_miles: Maximum distance to connect
-        avg_road_speed_mph: Average road speed for travel time
-        
-    Returns:
-        Graph with road connections added
+    Automatically chooses GPU (cuML) or CPU (KDTree) backend.
     """
-    print(f"Connecting {node_type} nodes to rail network...")
     
-    # Get all rail nodes with coordinates
-    rail_nodes = [
-        (n, d) for n, d in G.nodes(data=True)
-        if d.get('node_type') == 'rail_node' and d.get('lat') and d.get('lon')
-    ]
+    # 1. Extract Rail Nodes
+    rail_nodes = []
+    rail_coords = []
     
-    for loc_id, loc_data in tqdm(locations.items(), desc=f"  {node_type}"):
-        loc_node_id = f"{node_type}_{loc_id}"
-        loc_coords = (loc_data['lat'], loc_data['lon'])
-        
-        # Find nearest rail nodes
-        nearest_nodes = []
-        for rail_node_id, rail_data in rail_nodes:
-            rail_coords = (rail_data['lat'], rail_data['lon'])
-            distance = geodesic(loc_coords, rail_coords).miles
+    for n, d in G.nodes(data=True):
+        if d.get('node_type') == 'rail_node' and d.get('lat') is not None and d.get('lon') is not None:
+            rail_nodes.append(n)
+            rail_coords.append([d['lat'], d['lon']])
             
-            if distance <= max_connection_miles:
-                nearest_nodes.append((rail_node_id, distance))
+    if not rail_nodes:
+        print("  ⚠ No rail nodes found with coordinates!")
+        return G
+    
+    rail_coords_np = np.array(rail_coords, dtype=np.float32)
+    
+    # 2. Extract Location Nodes
+    loc_ids = []
+    loc_coords = []
+    loc_node_ids = []
+    
+    for loc_id, loc_data in locations.items():
+        loc_node_id = f"{node_type}_{loc_id}"
         
-        # Connect to nearest nodes (up to 3)
-        nearest_nodes.sort(key=lambda x: x[1])
-        for rail_node_id, distance in nearest_nodes[:3]:
-            travel_time_hours = distance / avg_road_speed_mph
+        # Verify node exists in graph (handle name matching if needed)
+        if loc_node_id not in G:
+             # Try matching by name attribute if ID doesn't match directly
+            found = False
+            target_name = loc_data.get('name')
+            if target_name:
+                for n, d in G.nodes(data=True):
+                    if d.get('node_type') == node_type and d.get('name') == target_name:
+                        loc_node_id = n
+                        found = True
+                        break
+            if not found:
+                continue
+                
+        loc_ids.append(loc_id)
+        loc_node_ids.append(loc_node_id)
+        loc_coords.append([loc_data['lat'], loc_data['lon']])
+        
+    if not loc_coords:
+        return G
+        
+    loc_coords_np = np.array(loc_coords, dtype=np.float32)
+    
+    print(f"Connecting {len(loc_coords)} {node_type}s to {len(rail_nodes)} rail nodes...")
+    
+    # 3. Nearest Neighbor Search
+    k_neighbors = 20
+    connections_made = 0
+    
+    if HAS_GPU:
+        print("  ⚡ Using GPU (cuML) for spatial search...")
+        # cuML expects float32
+        import cudf
+        import cuml
+        
+        # Create cuML NearestNeighbors model
+        knn = cuNearestNeighbors(n_neighbors=k_neighbors)
+        knn.fit(rail_coords_np)
+        
+        # Query
+        distances, indices = knn.kneighbors(loc_coords_np)
+        
+        # Convert back to numpy for iteration (distances are Euclidean in lat/lon space, need verification)
+        # Note: cuML returns squared L2 distance by default for some metrics, but standard is Euclidean
+        indices = indices.get() if hasattr(indices, 'get') else indices
+        
+    else:
+        print("  🐢 Using CPU (KDTree) for spatial search...")
+        tree = cKDTree(rail_coords_np)
+        # Approximate degree-to-miles conversion for search radius
+        # 1 deg ≈ 69 miles. max_connection_miles / 50 is a safe upper bound in degrees
+        search_radius = max_connection_miles / 50.0 
+        distances, indices = tree.query(loc_coords_np, k=k_neighbors, distance_upper_bound=search_radius)
+        
+    # 4. Create Edges (verify with Geodesic)
+    for i, loc_node_id in enumerate(loc_node_ids):
+        loc_lat, loc_lon = loc_coords[i]
+        
+        valid_connections = []
+        
+        for j in range(k_neighbors):
+            idx = indices[i][j]
+            
+            # Handle KDTree infinite index (no neighbor found within bound)
+            if idx == len(rail_nodes) or idx == -1:
+                continue
+                
+            rail_node_id = rail_nodes[idx]
+            rail_lat, rail_lon = rail_coords[idx]
+            
+            # Precise calculation using geodesic (miles)
+            dist_miles = geodesic((loc_lat, loc_lon), (rail_lat, rail_lon)).miles
+            
+            if dist_miles <= max_connection_miles:
+                valid_connections.append((rail_node_id, dist_miles))
+        
+        # Sort by actual miles and take top 3
+        valid_connections.sort(key=lambda x: x[1])
+        
+        for rail_node_id, dist_miles in valid_connections[:3]:
+            travel_time_hours = dist_miles / avg_road_speed_mph
             G.add_edge(
                 loc_node_id,
                 rail_node_id,
-                distance_miles=distance,
+                distance_miles=dist_miles,
                 travel_time_hours=travel_time_hours,
                 edge_type='road',
                 connection_type=f'{node_type}_to_rail'
             )
-    
+            connections_made += 1
+            
+    print(f"  ✓ Created {connections_made} connections")
     return G
 
 
@@ -191,64 +274,26 @@ def extract_subgraph_radius(
     center_lon: float,
     radius_miles: float = 50.0
 ) -> nx.Graph:
-    """
-    Extract subgraph within a radius of a center point.
-    
-    Args:
-        G: Full graph
-        center_lat: Center latitude
-        center_lon: Center longitude
-        radius_miles: Radius in miles
-        
-    Returns:
-        Subgraph containing only nodes within radius
-    """
+    """Extract subgraph within a radius using crude lat/lon filter first."""
     center_coords = (center_lat, center_lon)
+    
+    # 1 deg lat approx 69 miles
+    deg_radius = radius_miles / 60.0
     
     nodes_in_radius = []
     for node, data in G.nodes(data=True):
-        if data.get('lat') and data.get('lon'):
-            node_coords = (data['lat'], data['lon'])
-            distance = geodesic(center_coords, node_coords).miles
-            if distance <= radius_miles:
-                nodes_in_radius.append(node)
+        lat = data.get('lat')
+        lon = data.get('lon')
+        if lat and lon:
+            # Fast box filter
+            if abs(lat - center_lat) < deg_radius and abs(lon - center_lon) < deg_radius:
+                # Precise check
+                distance = geodesic(center_coords, (lat, lon)).miles
+                if distance <= radius_miles:
+                    nodes_in_radius.append(node)
     
     subgraph = G.subgraph(nodes_in_radius).copy()
     return subgraph
-
-
-def extract_client_subgraphs(
-    G: nx.Graph,
-    clients: Dict[str, Dict] = None,
-    radius_miles: float = 50.0
-) -> Dict[str, nx.Graph]:
-    """
-    Extract subgraphs for each Glid client location.
-    
-    Args:
-        G: Full graph
-        clients: Dictionary of client locations (default: GLID_CLIENTS)
-        radius_miles: Radius for each subgraph
-        
-    Returns:
-        Dictionary mapping client IDs to subgraphs
-    """
-    if clients is None:
-        clients = GLID_CLIENTS
-    
-    subgraphs = {}
-    for client_id, client_data in clients.items():
-        print(f"Extracting subgraph for {client_data['name']}...")
-        subgraphs[client_id] = extract_subgraph_radius(
-            G,
-            center_lat=client_data['lat'],
-            center_lon=client_data['lon'],
-            radius_miles=radius_miles
-        )
-        print(f"  Subgraph: {subgraphs[client_id].number_of_nodes()} nodes, "
-              f"{subgraphs[client_id].number_of_edges()} edges")
-    
-    return subgraphs
 
 
 def build_multimodal_graph(
@@ -258,19 +303,8 @@ def build_multimodal_graph(
     include_ports: bool = True,
     include_terminals: bool = True
 ) -> nx.Graph:
-    """
-    Build complete multi-modal transportation graph.
+    """Build complete multi-modal transportation graph."""
     
-    Args:
-        rail_nodes: Rail node GeoDataFrame
-        rail_lines: Rail line GeoDataFrame
-        include_clients: Add Glid client locations
-        include_ports: Add US port locations
-        include_terminals: Add rail terminal locations
-        
-    Returns:
-        Complete multi-modal NetworkX graph
-    """
     # Build base rail graph
     G = build_rail_graph(rail_nodes, rail_lines)
     
@@ -280,35 +314,17 @@ def build_multimodal_graph(
         G = connect_locations_to_graph(G, GLID_CLIENTS, 'client')
     
     if include_ports:
-        ports_dict = {f"port_{i}": p for i, p in enumerate(US_PORTS)}
+        # Convert list of dicts to dict of dicts if needed, or assume US_PORTS is correct format
+        # US_PORTS is list of dicts: [{'name':..., 'lat':..., 'lon':...}]
+        # Need to create ID-based dict
+        ports_dict = {p['name']: p for p in US_PORTS}
         G = add_location_nodes(G, ports_dict, 'port')
         G = connect_locations_to_graph(G, ports_dict, 'port')
     
     if include_terminals:
-        terminals_dict = {f"terminal_{i}": t for i, t in enumerate(RAIL_TERMINALS)}
+        terminals_dict = {t['name']: t for t in RAIL_TERMINALS}
         G = add_location_nodes(G, terminals_dict, 'terminal')
         G = connect_locations_to_graph(G, terminals_dict, 'terminal')
     
     print(f"\nFinal multi-modal graph: {G.number_of_nodes():,} nodes, {G.number_of_edges():,} edges")
     return G
-
-
-if __name__ == "__main__":
-    # Test graph building
-    from data.loaders import load_rail_nodes, load_rail_lines
-    
-    nodes = load_rail_nodes()
-    lines = load_rail_lines()
-    
-    G = build_multimodal_graph(nodes, lines)
-    
-    # Test subgraph extraction for Woodland
-    woodland = GLID_CLIENTS['port_of_woodland']
-    subgraph = extract_subgraph_radius(G, woodland['lat'], woodland['lon'], 50)
-    print(f"\nWoodland 50-mile subgraph: {subgraph.number_of_nodes()} nodes")
-
-
-
-
-
-

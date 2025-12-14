@@ -146,6 +146,17 @@ def add_weather_features(
         'precipitation_sum', 'wind_speed_10m_max', 'wind_gusts_10m_max'
     ]
     
+    # Normalize date columns to naive datetime (strip timezone info)
+    # This prevents merge errors between datetime64[ns, UTC] and datetime64[ns]
+    if 'date' in df.columns:
+        if hasattr(df['date'].dtype, 'tz') and df['date'].dtype.tz is not None:
+            df = df.copy()
+            df['date'] = df['date'].dt.tz_localize(None)
+    if 'date' in weather_df.columns:
+        if hasattr(weather_df['date'].dtype, 'tz') and weather_df['date'].dtype.tz is not None:
+            weather_df = weather_df.copy()
+            weather_df['date'] = weather_df['date'].dt.tz_localize(None)
+    
     # Auto-detect merge columns
     if merge_on is None:
         merge_on = []

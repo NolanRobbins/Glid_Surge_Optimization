@@ -1,0 +1,87 @@
+# =============================================================================
+# Docker Compose for Nemotron 49B on GX10 (DGX Spark)
+# Uses NVIDIA vLLM container with local model files
+# =============================================================================
+#
+# Usage:
+#   docker compose -f docker-compose.nim.yml up nemotron-vllm
+#
+# Test:
+#   curl http://localhost:8000/v1/models
+#   curl http://localhost:8000/v1/chat/completions \
+#     -H "Content-Type: application/json" \
+#     -d '{"model": "nemotron-49b", "messages": [{"role": "user", "content": "Hello"}]}'
+# =============================================================================
+
+services:
+  # Nemotron 49B via NVIDIA vLLM (uses local model files)
+  nemotron-vllm:
+    image: nvcr.io/nvidia/vllm:25.09-py3
+    container_name: nemotron-49b-server
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      # Blackwell GB10 optimizations
+      - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      - VLLM_LOGGING_LEVEL=INFO
+    volumes:
+      # Mount local Nemotron 49B model
+      - "/home/asus/Desktop/Nemotron 49B:/model:ro"
+      # HuggingFace cache
+      - hf-cache:/root/.cache/huggingface
+    ports:
+      - "8000:8000"
+    working_dir: /workspace
+    command: >
+      python3 -m vllm.entrypoints.openai.api_server
+      --model /model
+      --served-model-name nemotron-49b
+      --trust-remote-code
+      --host 0.0.0.0
+      --port 8000
+      --tensor-parallel-size 1
+      --max-model-len 32768
+      --gpu-memory-utilization 0.90
+      --enforce-eager
+      --dtype bfloat16
+      --enable-auto-tool-choice
+      --tool-parser-plugin /model/llama_nemotron_toolcall_parser_no_streaming.py
+      --tool-call-parser llama_nemotron_json
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 600s  # 10 min for initial model load
+    restart: unless-stopped
+    shm_size: '32gb'
+    ulimits:
+      memlock: -1
+      stack: 67108864
+
+  # Alternative: Llama 3.1 8B via NIM (lighter, faster startup)
+  llama-8b-nim:
+    image: nvcr.io/nim/meta/llama-3.1-8b-instruct-dgx-spark:latest
+    container_name: llama-8b-nim-server
+    environment:
+      - NGC_API_KEY=${NGC_API_KEY:-}
+    ports:
+      - "8001:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    shm_size: '16gb'
+
+volumes:
+  hf-cache:
+

@@ -19,6 +19,21 @@ sys.path.append(str(Path(__file__).parent.parent))
 from config import GLID_CLIENTS, US_PORTS, RAIL_TERMINALS, DASHBOARD_CONFIG
 
 
+import json
+
+# ... imports ...
+
+PAYLOAD_PATH = Path(__file__).parent.parent.parent / "output" / "dashboard_payload.json"
+
+def load_payload():
+    """Load the latest dashboard payload."""
+    if PAYLOAD_PATH.exists():
+        try:
+            return json.loads(PAYLOAD_PATH.read_text())
+        except Exception:
+            return None
+    return None
+
 def create_dashboard():
     """Create and configure the Dash application."""
     
@@ -166,81 +181,67 @@ def register_callbacks(app):
         [Input("refresh-interval", "n_intervals")]
     )
     def update_map(n):
-        """Update the network map."""
-        # Create base figure
+        """Update the network map with active route options."""
+        payload = load_payload()
         fig = go.Figure()
         
-        # Add ports
+        # 1. Base Layer: Ports
         port_lats = [p['lat'] for p in US_PORTS]
         port_lons = [p['lon'] for p in US_PORTS]
         port_names = [p['name'] for p in US_PORTS]
         
         fig.add_trace(go.Scattergeo(
-            lat=port_lats,
-            lon=port_lons,
-            text=port_names,
-            mode='markers+text',
-            marker=dict(size=12, color='#00bcd4', symbol='circle'),
-            textposition='top center',
-            textfont=dict(size=8, color='white'),
+            lat=port_lats, lon=port_lons, text=port_names,
+            mode='markers+text', marker=dict(size=10, color='#00bcd4', symbol='circle'),
+            textposition='top center', textfont=dict(size=9, color='white'),
             name='Ports'
         ))
-        
-        # Add Glid clients
-        client_lats = [c['lat'] for c in GLID_CLIENTS.values()]
-        client_lons = [c['lon'] for c in GLID_CLIENTS.values()]
-        client_names = [c['name'] for c in GLID_CLIENTS.values()]
-        
+
+        # 2. Base Layer: Rail Terminals (sample)
+        term_lats = [t['lat'] for t in RAIL_TERMINALS[:20]] # Show top 20 to avoid clutter
+        term_lons = [t['lon'] for t in RAIL_TERMINALS[:20]]
         fig.add_trace(go.Scattergeo(
-            lat=client_lats,
-            lon=client_lons,
-            text=client_names,
-            mode='markers+text',
-            marker=dict(size=10, color='#4caf50', symbol='diamond'),
-            textposition='bottom center',
-            textfont=dict(size=8, color='white'),
-            name='Glid Clients'
-        ))
-        
-        # Add rail terminals
-        terminal_lats = [t['lat'] for t in RAIL_TERMINALS]
-        terminal_lons = [t['lon'] for t in RAIL_TERMINALS]
-        terminal_names = [t['name'] for t in RAIL_TERMINALS]
-        
-        fig.add_trace(go.Scattergeo(
-            lat=terminal_lats,
-            lon=terminal_lons,
-            text=terminal_names,
-            mode='markers',
-            marker=dict(size=8, color='#ff9800', symbol='square'),
+            lat=term_lats, lon=term_lons,
+            mode='markers', marker=dict(size=6, color='#ff9800', symbol='square'),
             name='Rail Terminals'
         ))
-        
-        # Update layout
+
+        # 3. Dynamic Layer: Optimized Routes from GNN
+        if payload and "route_options" in payload:
+            routes = payload["route_options"].get("routes", [])
+            colors = {'road': '#f44336', 'rail': '#4caf50', 'mixed': '#ffeb3b'}
+            
+            for i, route in enumerate(routes):
+                r_type = route.get("metadata", {}).get("routeType", "mixed")
+                # Draw segments
+                for seg in route.get("segments", []):
+                    coords = seg.get("coordinates", [])
+                    if not coords: continue
+                    lons, lats = zip(*coords)
+                    
+                    name = f"Route {i+1}: {seg['mode'].upper()}"
+                    opacity = 1.0 if i == 0 else 0.5 # Highlight best route
+                    width = 4 if i == 0 else 2
+                    
+                    fig.add_trace(go.Scattergeo(
+                        lat=lats, lon=lons, mode='lines',
+                        line=dict(width=width, color=colors.get(seg['mode'], 'white')),
+                        opacity=opacity, name=name
+                    ))
+
         fig.update_layout(
             geo=dict(
-                scope='usa',
-                projection_type='albers usa',
-                showland=True,
-                landcolor='rgb(30, 30, 30)',
-                countrycolor='rgb(60, 60, 60)',
-                coastlinecolor='rgb(60, 60, 60)',
-                showlakes=True,
-                lakecolor='rgb(20, 20, 30)'
+                scope='usa', projection_type='albers usa',
+                showland=True, landcolor='rgb(30, 30, 30)',
+                countrycolor='rgb(60, 60, 60)', coastlinecolor='rgb(60, 60, 60)',
+                showlakes=True, lakecolor='rgb(20, 20, 30)',
+                center=dict(lat=38, lon=-95), # Center US
+                lataxis_range=[25, 50], lonaxis_range=[-125, -65]
             ),
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
             margin=dict(l=0, r=0, t=0, b=0),
-            legend=dict(
-                orientation='h',
-                yanchor='bottom',
-                y=1.02,
-                xanchor='center',
-                x=0.5,
-                font=dict(color='white')
-            )
+            legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5, font=dict(color='white'))
         )
-        
         return fig
     
     @app.callback(
@@ -248,12 +249,32 @@ def register_callbacks(app):
         [Input("refresh-interval", "n_intervals")]
     )
     def update_alerts(n):
-        """Update surge alerts."""
-        alerts = [
-            {"port": "Port of LA", "level": "warning", "msg": "Moderate congestion expected 14:00-18:00"},
-            {"port": "Port of Long Beach", "level": "success", "msg": "Low congestion - optimal window now"},
-            {"port": "Port of Oakland", "level": "danger", "msg": "High volume surge in 4h"},
-        ]
+        """Update surge alerts based on real GNN payload."""
+        payload = load_payload()
+        if not payload:
+             return html.Div("Waiting for GNN inference...", className="text-muted")
+
+        alerts = []
+        # Check 24h horizon predictions
+        h24 = payload.get("horizons", {}).get("24", {}).get("port_predictions", {})
+        
+        for port, surge in h24.items():
+            surge_val = float(surge) if surge is not None else 0.0
+            if surge_val > 0.7:
+                level = "danger"
+                msg = f"Critical Surge (Level {surge_val:.2f})"
+            elif surge_val > 0.4:
+                level = "warning"
+                msg = f"Moderate Surge (Level {surge_val:.2f})"
+            else:
+                level = "success"
+                msg = "Optimal Flow"
+            
+            alerts.append({"port": port, "level": level, "msg": msg})
+
+        # Fallback if empty
+        if not alerts:
+             alerts.append({"port": "System", "level": "info", "msg": "No port predictions available"})
         
         return html.Div([
             dbc.Alert([
@@ -268,21 +289,42 @@ def register_callbacks(app):
         [Input("refresh-interval", "n_intervals")]
     )
     def update_dispatch_windows(n):
-        """Update dispatch window recommendations."""
-        now = datetime.now()
-        windows = [
-            {"time": (now + timedelta(hours=2)).strftime("%H:%M"), "priority": "HIGH", "color": "success"},
-            {"time": (now + timedelta(hours=8)).strftime("%H:%M"), "priority": "MED", "color": "warning"},
-            {"time": (now + timedelta(hours=14)).strftime("%H:%M"), "priority": "LOW", "color": "secondary"},
-        ]
+        """Update dispatch window recommendations based on Route Options."""
+        payload = load_payload()
+        if not payload or "route_options" not in payload:
+            return html.Div("Calculating optimal windows...", className="text-muted")
+            
+        routes = payload["route_options"].get("routes", [])
+        # Find the best route
+        best_route = None
+        if routes:
+             # Already sorted by score in GNN output
+             best_route = routes[0]
         
+        if not best_route:
+             return html.Div("No routes found", className="text-muted")
+             
+        score = best_route.get("optimizationScore", 0)
+        route_type = best_route.get("metadata", {}).get("routeType", "unknown")
+        notes = best_route.get("metadata", {}).get("notes", "Standard dispatch")
+        
+        # Interpret score as priority
+        if score > 80:
+             priority = "HIGH PRIORITY"
+             color = "success"
+        elif score > 50:
+             priority = "MEDIUM PRIORITY"
+             color = "warning"
+        else:
+             priority = "DELAY DISPATCH"
+             color = "danger"
+             
         return html.Div([
-            dbc.Badge(
-                f"{w['priority']}: {w['time']}",
-                color=w['color'],
-                className="me-2 mb-2 p-2"
-            )
-            for w in windows
+            html.Div([
+                dbc.Badge(priority, color=color, className="me-2"),
+                html.Span(f"Rec: {route_type.upper()} ({score:.0f}/100)", className="fw-bold")
+            ], className="mb-2"),
+            html.P(notes, className="small text-muted mb-0")
         ])
     
     @app.callback(
@@ -290,30 +332,46 @@ def register_callbacks(app):
         [Input("refresh-interval", "n_intervals")]
     )
     def update_forecast(n):
-        """Update forecast chart."""
-        hours = list(range(72))
-        base = 100 + np.sin(np.array(hours) / 12 * np.pi) * 30
-        forecast = base + np.random.randn(72) * 10
-        
+        """Update forecast chart from GNN payload."""
+        payload = load_payload()
         fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=hours,
-            y=forecast,
-            mode='lines',
-            fill='tozeroy',
-            fillcolor='rgba(0, 188, 212, 0.3)',
-            line=dict(color='#00bcd4')
-        ))
         
+        if payload and "horizons" in payload:
+            # We have 24, 48, 72h predictions
+            # Let's plot the average surge level across all ports for these horizons
+            horizons = sorted([int(h) for h in payload["horizons"].keys()])
+            avg_surge = []
+            
+            for h in horizons:
+                preds = payload["horizons"][str(h)].get("port_predictions", {}).values()
+                valid_preds = [float(p) for p in preds if p is not None]
+                avg = np.mean(valid_preds) if valid_preds else 0.5
+                avg_surge.append(avg)
+            
+            # Interpolate for smooth line (0 to 72 hours)
+            x_smooth = np.linspace(0, 72, 72)
+            if len(horizons) >= 2:
+                y_smooth = np.interp(x_smooth, horizons, avg_surge)
+            else:
+                y_smooth = [avg_surge[0]] * 72 if avg_surge else [0.5] * 72
+
+            fig.add_trace(go.Scatter(
+                x=x_smooth, y=y_smooth, mode='lines', name='Avg Network Congestion',
+                fill='tozeroy', fillcolor='rgba(0, 188, 212, 0.3)',
+                line=dict(color='#00bcd4', width=3)
+            ))
+        else:
+            # Fallback placeholder
+            x = list(range(72))
+            y = [0.5] * 72
+            fig.add_trace(go.Scatter(x=x, y=y, line=dict(color='gray', dash='dash'), name='Waiting for Data'))
+
         fig.update_layout(
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
-            xaxis=dict(title='Hours Ahead', gridcolor='rgba(255,255,255,0.1)'),
-            yaxis=dict(title='Port Calls', gridcolor='rgba(255,255,255,0.1)'),
-            margin=dict(l=40, r=20, t=20, b=40),
-            font=dict(color='white')
+            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+            xaxis=dict(title='Hours Ahead', gridcolor='rgba(255,255,255,0.1)', range=[0, 72]),
+            yaxis=dict(title='Congestion Index (0-1)', gridcolor='rgba(255,255,255,0.1)', range=[0, 1]),
+            margin=dict(l=40, r=20, t=20, b=40), font=dict(color='white')
         )
-        
         return fig
     
     @app.callback(
@@ -321,27 +379,42 @@ def register_callbacks(app):
         [Input("refresh-interval", "n_intervals")]
     )
     def update_cost_chart(n):
-        """Update cost comparison chart."""
-        categories = ['Dwell', 'Transport', 'Empty Miles', 'Penalties', 'Energy']
-        traditional = [7200, 3500, 2100, 1250, 900]
-        glid = [1800, 1800, 600, 250, 225]
+        """Update cost comparison chart from GNN Route Options."""
+        payload = load_payload()
+        fig = go.Figure()
         
-        fig = go.Figure(data=[
-            go.Bar(name='Traditional', x=categories, y=traditional, marker_color='#f44336'),
-            go.Bar(name='Glid', x=categories, y=glid, marker_color='#4caf50')
-        ])
+        road_cost = 0
+        intermodal_cost = 0
+        
+        if payload and "route_options" in payload:
+            routes = payload["route_options"].get("routes", [])
+            for r in routes:
+                r_type = r.get("metadata", {}).get("routeType", "")
+                if r_type == "road_only":
+                    road_cost = r.get("totalCost", 0)
+                elif r_type == "mixed":
+                    intermodal_cost = r.get("totalCost", 0)
+        
+        # Fallbacks if 0 (to show something)
+        if road_cost == 0: road_cost = 100
+        if intermodal_cost == 0: intermodal_cost = 60
+        
+        fig.add_trace(go.Bar(
+            name='Traditional (Road)', x=['Total Cost'], y=[road_cost],
+            marker_color='#f44336'
+        ))
+        fig.add_trace(go.Bar(
+            name='Glid Optimized', x=['Total Cost'], y=[intermodal_cost],
+            marker_color='#4caf50'
+        ))
         
         fig.update_layout(
-            barmode='group',
-            paper_bgcolor='rgba(0,0,0,0)',
-            plot_bgcolor='rgba(0,0,0,0)',
+            barmode='group', paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
             xaxis=dict(gridcolor='rgba(255,255,255,0.1)'),
             yaxis=dict(title='Cost ($)', gridcolor='rgba(255,255,255,0.1)'),
-            margin=dict(l=40, r=20, t=20, b=40),
-            font=dict(color='white'),
+            margin=dict(l=40, r=20, t=20, b=40), font=dict(color='white'),
             legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='center', x=0.5)
         )
-        
         return fig
 
 

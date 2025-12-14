@@ -12,11 +12,16 @@ const CustomerRoutesMap = dynamic(() => import('@/components/CustomerRoutesMap')
   ssr: false,
 })
 
+const AIAssistant = dynamic(() => import('@/components/AIAssistant'), {
+  ssr: false,
+})
+
 
 export default function Home() {
   const pathname = usePathname()
   const [currentRoute, setCurrentRoute] = useState<Route | null>(null)
   const [currentCompetitorRoute, setCurrentCompetitorRoute] = useState<Route | null>(null)
+  const [selectedCustomerRoute, setSelectedCustomerRoute] = useState<CustomerRoute | null>(null)
   const [routePlanningVisible, setRoutePlanningVisible] = useState(true)
 
   // Load synthetic customer routes data
@@ -73,13 +78,14 @@ export default function Home() {
   const handleRouteSelect = (route: CustomerRoute) => {
     setCurrentRoute(route.route || null)
     setCurrentCompetitorRoute(route.competitorRoute || null)
+    setSelectedCustomerRoute(route)
   }
 
 
   return (
     <main className="w-screen h-screen flex bg-gray-50 text-gray-800 relative">
       {/* Vertical Navigation Rail - Left Side */}
-      <div className="w-20 flex flex-col items-center justify-between py-5 z-[1000] h-full">
+      <div className="w-20 flex flex-col items-center justify-between py-8 z-[1000] h-full">
         <div className="flex flex-col items-center gap-3">
           {/* Logo/Avatar */}
           <div>
@@ -91,11 +97,11 @@ export default function Home() {
           </div>
           
           {/* Navigation buttons */}
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-1 p-1 rounded-full border border-gray-200">
             <a
               href="/"
               title="Routes View"
-              className={`inline-flex h-9 w-9 items-center justify-center rounded-full border border-gray-200 shadow-sm ring-1 ring-inset ring-gray-900/5 transition-colors ${
+              className={`inline-flex h-9 w-9 items-center justify-center rounded-full border border-gray-200 ring-1 ring-inset ring-gray-900/5 transition-colors ${
                 pathname === '/' 
                   ? 'bg-black text-white hover:bg-gray-900' 
                   : 'bg-white text-gray-500 hover:bg-gray-100 hover:text-gray-900'
@@ -109,7 +115,7 @@ export default function Home() {
             <a
               href="/newpage"
               title="Elevation View"
-              className={`inline-flex h-9 w-9 items-center justify-center rounded-full border border-gray-200 shadow-sm ring-1 ring-inset ring-gray-900/5 transition-colors ${
+              className={`inline-flex h-9 w-9 items-center justify-center rounded-full border border-gray-200 ring-1 ring-inset ring-gray-900/5 transition-colors ${
                 pathname === '/newpage' 
                   ? 'bg-black text-white hover:bg-gray-900' 
                   : 'bg-white text-gray-500 hover:bg-gray-100 hover:text-gray-900'
@@ -128,13 +134,18 @@ export default function Home() {
         {/* User Avatar */}
         <div className="flex flex-col items-center gap-3">
           <button
-            className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-500 hover:bg-gray-100 hover:text-gray-900 shadow-sm ring-1 ring-inset ring-gray-900/5 transition-colors"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-200 bg-white hover:bg-gray-100 shadow-sm ring-1 ring-inset ring-gray-900/5 transition-colors overflow-hidden"
             title="User Profile"
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
               <circle cx="12" cy="7" r="4"></circle>
             </svg>
+            <img 
+              src="/kevinprofile.jpeg" 
+              alt="User Profile" 
+              className="w-full h-full object-cover"
+            />
           </button>
         </div>
       </div>
@@ -202,10 +213,17 @@ export default function Home() {
               route={currentRoute}
               competitorRoute={currentCompetitorRoute}
               containerResized={routePlanningVisible}
+              selectedRoute={selectedCustomerRoute}
             />
           </div>
         </div>
       </div>
+      
+      {/* AI Assistant - Powered by Nemotron 49B */}
+      <AIAssistant 
+        routeContext={currentRoute}
+        surgeContext={null}
+      />
     </main>
   )
 }

@@ -35,12 +35,12 @@ Weather Data APIs (Open-Meteo or Visual Crossing) (DONE)
 For predicting weather-driven delays affecting port operations, trucking, and rail.
 4. Insight Goal
 Teams must generate actionable insights, including:
-24–72 hour port surge predictions
-Early warnings for rail congestion or rail underutilization
-First-mile drayage delay forecasting
-Ideal time windows for rail dispatch
-Recommended repositioning routes between nearby rail terminals
-Unified real-time visualization of freight flow from port to truck to rail
+- 24–72 hour port surge predictions
+- Early warnings for rail congestion or rail underutilization
+- First-mile drayage delay forecasting
+- Ideal time windows for rail dispatch
+- Recommended repositioning routes between nearby rail terminals
+- Unified real-time visualization of freight flow from port to truck to rail
 5. Build Objective
 Teams must produce a functioning system that:
 Integrates port, truck, and rail datasets

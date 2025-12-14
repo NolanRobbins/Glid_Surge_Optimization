@@ -17,7 +17,7 @@ services:
       dockerfile: Dockerfile.gnn-v2
     image: glid-gnn-v2:latest
     container_name: glid-gnn-v2-train
-    runtime: nvidia
+    # Modern Docker GPU support (no runtime: nvidia needed)
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CUDA_VISIBLE_DEVICES=0
@@ -43,7 +43,7 @@ services:
       dockerfile: Dockerfile.gnn-v2
     image: glid-gnn-v2:latest
     container_name: glid-gnn-v2-shell
-    runtime: nvidia
+    # Modern Docker GPU support (no runtime: nvidia needed)
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
     volumes:
@@ -60,11 +60,35 @@ services:
               count: all
               capabilities: [gpu]
 
+  # FastAPI service for surge + routing testing
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.gnn-v2
+    image: glid-gnn-v2:latest
+    container_name: glid-gnn-v2-api
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - PROJ_LIB=/opt/conda/share/proj
+    volumes:
+      - .:/workspace
+      - ./data:/workspace/data:ro
+      - ./output:/workspace/output
+    working_dir: /workspace
+    command: uvicorn src.api.server:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
+
   # Use pre-built RAPIDS container directly (faster, no build needed)
   rapids-quick:
     image: rapidsai/base:25.12-cuda13-py3.12-arm64
     container_name: glid-rapids-quick
-    runtime: nvidia
+    # Modern Docker GPU support (no runtime: nvidia needed)
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
     volumes:

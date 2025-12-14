@@ -128,6 +128,45 @@ npm run build
 npm start
 ```
 
+## Python API (Surge + Routing)
+
+Run the lightweight FastAPI service for surge inference and route computation:
+
+```bash
+pip install -r requirements.txt
+uvicorn src.api.server:app --reload --port 8000
+```
+
+Endpoints:
+- `GET /health` / `GET /ready`
+- `POST /predict/surge` – tabular feature rows + optional `horizon`
+- `POST /routes/compute` – `{ origin:[lon,lat], destination:[lon,lat], mode:"rail"|"road"|"auto" }`
+- `GET /routes/{id}` – serve saved GeoJSON (e.g., `long-beach-to-fleet-yards-route`)
+- `GET /network/rail/lines` / `GET /network/rail/nodes` – cached local GeoJSON slices
+
+Sample requests:
+
+```bash
+# Surge prediction (example feature row)
+curl -X POST http://localhost:8000/predict/surge \
+  -H "Content-Type: application/json" \
+  -d '{
+        "horizon": 24,
+        "rows": [
+          {"date": "2024-01-01", "portname": "Port of Long Beach", "portcalls": 42}
+        ]
+      }'
+
+# Route compute: Long Beach port -> Fleet Yards/DAMCO
+curl -X POST http://localhost:8000/routes/compute \
+  -H "Content-Type: application/json" \
+  -d '{
+        "origin": [-118.216458, 33.754185],
+        "destination": [-118.2200, 33.8190],
+        "mode": "auto"
+      }'
+```
+
 ## License
 
 This project is private and proprietary.

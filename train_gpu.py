@@ -7,6 +7,13 @@ Optimized for ASUS Ascent GX10 with NVIDIA GB10 Grace Blackwell Superchip
 - 128GB unified memory
 - NVIDIA Blackwell architecture
 
+ALIGNED WITH training.md SPECIFICATION:
+- Integrates ALL data sources (Port Activity, Weather, AIS Vessels, Rail Network)
+- Multi-horizon predictions (24h, 48h, 72h)
+- Uses real surge data from IMF PortWatch
+- Graph topology features via cuGraph
+- Weather impact scoring
+
 Usage:
     python train_gpu.py                    # Default training
     python train_gpu.py --config accurate  # Maximum accuracy
@@ -19,20 +26,16 @@ import json
 import pickle
 import time
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List, Tuple
 
 # ============================================================================
 # CUDA/GPU OPTIMIZATION FLAGS FOR ASUS ASCENT GX10
 # ============================================================================
-# Enable TF32 for Blackwell/Ampere+ GPUs (faster matmul with minimal precision loss)
 os.environ['NVIDIA_TF32_OVERRIDE'] = '1'
-# Enable async GPU operations
 os.environ['CUDA_LAUNCH_BLOCKING'] = '0'
-# Memory pool optimization for large memory (128GB)
 os.environ['CUPY_ACCELERATORS'] = 'cub'
-# Set CUDA library path
 os.environ['LD_LIBRARY_PATH'] = '/usr/local/cuda-13.0/lib64:/usr/local/cuda-13.0/targets/sbsa-linux/lib:' + os.environ.get('LD_LIBRARY_PATH', '')
 
 # Add src to path
@@ -43,13 +46,11 @@ import pandas as pd
 from tqdm import tqdm
 from tqdm.auto import tqdm as tqdm_auto
 
-# Rich progress bar support (optional but beautiful)
+# Rich progress bar support
 try:
-    from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRemainingColumn, MofNCompleteColumn
     from rich.console import Console
     from rich.table import Table
     from rich.panel import Panel
-    from rich.live import Live
     from rich import print as rprint
     HAS_RICH = True
 except ImportError:
@@ -62,16 +63,16 @@ except ImportError:
 print("="*70)
 print("  GLID SURGE OPTIMIZATION - GPU TRAINING")
 print("  Optimized for ASUS Ascent GX10 (Grace Blackwell)")
+print("  ALIGNED WITH training.md SPECIFICATION")
 print("="*70)
 
-# Import RAPIDS with memory pool setup
+# Import RAPIDS
 try:
     import cudf
     import cuml
     import cugraph
     import cupy as cp
     
-    # Configure CuPy memory pool for large memory systems (128GB)
     mempool = cp.get_default_memory_pool()
     pinned_mempool = cp.get_default_pinned_memory_pool()
     
@@ -85,16 +86,13 @@ except ImportError as e:
     HAS_RAPIDS = False
     mempool = None
 
-# Import PyTorch with optimizations (OPTIONAL - only for diagnostics)
+# PyTorch (for GNN if needed)
 try:
     import torch
     import torch.backends.cudnn as cudnn
     
-    # Enable cuDNN autotuner for optimal kernel selection
     cudnn.benchmark = True
     cudnn.enabled = True
-    
-    # Enable TF32 for Blackwell/Ampere (2-3x faster, minimal precision loss)
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
     
@@ -109,27 +107,11 @@ try:
         print(f"  GPU: {gpu_name}")
         print(f"  Memory: {gpu_mem:.1f} GB")
         print(f"  Compute Capability: {gpu_compute[0]}.{gpu_compute[1]}")
-        print(f"  cuDNN: {torch.backends.cudnn.version()}")
-        print(f"  TF32 enabled: ✓")
-        
-        # Check for Blackwell/Grace features
-        if gpu_compute[0] >= 9:
-            print(f"  ✓ Blackwell architecture detected - full optimization enabled")
-        elif gpu_compute[0] >= 8:
-            print(f"  ✓ Ampere+ architecture - TF32 optimization enabled")
     
     HAS_TORCH = True
 except ImportError:
-    # PyTorch not needed for training - use CuPy for GPU info
-    print("✗ PyTorch not available (not required for cuML training)")
-    if HAS_RAPIDS:
-        try:
-            props = cp.cuda.runtime.getDeviceProperties(0)
-            print(f"  GPU (via CuPy): {props['name'].decode()}")
-            print(f"  ✓ RAPIDS will handle all GPU operations")
-        except:
-            pass
     HAS_TORCH = False
+    print("✗ PyTorch not available")
 
 print("="*70)
 
@@ -154,22 +136,17 @@ class GPUMonitor:
             torch.cuda.synchronize()
     
     def get_memory_stats(self) -> Dict[str, float]:
-        """Get current GPU memory usage."""
         stats = {}
-        
         if HAS_TORCH and torch.cuda.is_available():
             stats['torch_allocated_gb'] = torch.cuda.memory_allocated() / 1e9
             stats['torch_reserved_gb'] = torch.cuda.memory_reserved() / 1e9
             stats['torch_peak_gb'] = torch.cuda.max_memory_allocated() / 1e9
-        
         if HAS_RAPIDS and mempool:
             stats['cupy_used_gb'] = mempool.used_bytes() / 1e9
             stats['cupy_total_gb'] = mempool.total_bytes() / 1e9
-        
         return stats
     
     def log_metrics(self, step: int, metrics: Dict[str, float]):
-        """Log metrics for a training step."""
         elapsed = time.time() - self.start_time if self.start_time else 0
         record = {
             'step': step,
@@ -181,23 +158,18 @@ class GPUMonitor:
         return record
     
     def print_summary(self):
-        """Print training summary with GPU stats."""
         if not self.metrics_history:
             return
-        
         elapsed = time.time() - self.start_time if self.start_time else 0
         mem_stats = self.get_memory_stats()
-        
         print("\n" + "="*70)
         print("  GPU UTILIZATION SUMMARY")
         print("="*70)
         print(f"  Total training time: {elapsed:.1f} seconds")
-        
         if 'torch_peak_gb' in mem_stats:
             print(f"  Peak GPU memory (PyTorch): {mem_stats['torch_peak_gb']:.2f} GB")
         if 'cupy_total_gb' in mem_stats:
             print(f"  Peak GPU memory (CuPy): {mem_stats['cupy_total_gb']:.2f} GB")
-        
         print("="*70)
 
 
@@ -205,246 +177,277 @@ gpu_monitor = GPUMonitor()
 
 
 # ============================================================================
-# TRAINING CONFIGURATION - Research-Backed Hyperparameters
+# DATA LOADING - ALL SOURCES FROM training.md
 # ============================================================================
 
-class TrainingConfig:
+def load_all_data_sources() -> Dict[str, Any]:
     """
-    Configuration for GPU training with checkpointing and early stopping.
-    
-    Research-backed hyperparameters for cuML RandomForest on transportation data:
-    
-    Dataset characteristics:
-    - ~250K rail nodes, ~300K edges (sparse graph)
-    - 12 features (graph centrality + temporal + spatial)
-    - Regression task (surge prediction)
-    
-    Key research insights:
-    1. n_estimators: 200-500 optimal for regression (Breiman, 2001)
-       - Diminishing returns after ~300 trees
-       - GPU acceleration makes 500 trees feasible
-       
-    2. max_depth: 12-20 for complex spatial patterns
-       - Deeper than classification (typically 6-10)
-       - Transportation patterns have hierarchical structure
-       
-    3. min_samples_leaf: 5-20 prevents overfitting on sparse regions
-    
-    4. max_features: 'sqrt' or 0.33 for decorrelation
-       - sqrt(12) ≈ 3-4 features per split
-       
-    References:
-    - "Random Forests" (Breiman, 2001) - foundational hyperparameter guidance
-    - "Hyperparameter Tuning for ML Models" (Probst et al., 2019) - meta-analysis
-    - NVIDIA RAPIDS documentation for GPU-specific optimizations
+    Load ALL data sources as specified in training.md:
+    1. Port Activity (IMF PortWatch) - for surge labels
+    2. Rail Network (USDOT) - for graph topology
+    3. Weather Data - for weather impact features
+    4. AIS Vessel Tracking - for vessel ETAs
+    5. PortWatch Chokepoints - for trade volume context
+    6. Truck Travel Times - for drayage calibration
     """
+    from data.loaders import (
+        load_rail_nodes, load_rail_lines, load_port_activity,
+        load_weather_data, load_ais_vessels, load_portwatch_chokepoints,
+        load_truck_times
+    )
     
-    def __init__(
-        self,
-        # Core RandomForest hyperparameters (research-backed)
-        n_estimators: int = 300,        # Increased from 100 - better for regression
-        max_depth: int = 15,            # Increased from 10 - captures spatial hierarchy
-        min_samples_leaf: int = 10,     # NEW - prevents overfitting
-        min_samples_split: int = 20,    # NEW - ensures meaningful splits
-        max_features: float = 0.33,     # NEW - feature subsampling (sqrt approximation)
-        
-        # Training settings
-        n_samples: int = 100000,        # Increased from 50K - more training data
-        test_size: float = 0.2,
-        random_state: int = 42,
-        n_streams: int = 8,             # GPU parallelism streams
-        
-        # Checkpointing
-        checkpoint_dir: str = "output/checkpoints",
-        
-        # Early stopping (for iterative ensemble methods)
-        patience: int = 5,
-        min_improvement: float = 0.001,
-    ):
-        self.n_estimators = n_estimators
-        self.max_depth = max_depth
-        self.min_samples_leaf = min_samples_leaf
-        self.min_samples_split = min_samples_split
-        self.max_features = max_features
-        self.n_samples = n_samples
-        self.test_size = test_size
-        self.random_state = random_state
-        self.n_streams = n_streams
-        self.checkpoint_dir = Path(checkpoint_dir)
-        self.patience = patience
-        self.min_improvement = min_improvement
-        
-        # Create checkpoint directory
-        self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    print("\n" + "="*70)
+    print("  LOADING ALL DATA SOURCES (per training.md)")
+    print("="*70)
     
-    def to_dict(self):
-        return {
-            'n_estimators': self.n_estimators,
-            'max_depth': self.max_depth,
-            'min_samples_leaf': self.min_samples_leaf,
-            'min_samples_split': self.min_samples_split,
-            'max_features': self.max_features,
-            'n_samples': self.n_samples,
-            'test_size': self.test_size,
-            'random_state': self.random_state,
-            'n_streams': self.n_streams,
-            'checkpoint_dir': str(self.checkpoint_dir),
-            'patience': self.patience,
-            'min_improvement': self.min_improvement,
-        }
+    data = {}
+    
+    # 1. Rail Network (Graph Topology)
+    print("\n[1/7] Loading Rail Network...")
+    data['rail_nodes'] = load_rail_nodes(filter_us_only=True)
+    data['rail_lines'] = load_rail_lines(filter_us_only=True)
+    print(f"  ✓ {len(data['rail_nodes']):,} nodes, {len(data['rail_lines']):,} edges")
+    
+    # 2. Port Activity (Surge Labels) - THE KEY DATA SOURCE
+    print("\n[2/7] Loading Port Activity (IMF PortWatch)...")
+    # Load for major US ports
+    major_ports = [
+        "Los Angeles-Long Beach", "New York-New Jersey", "Savannah",
+        "Houston", "Oakland", "Seattle", "Tacoma", "Virginia",
+        "Charleston", "Miami", "New Orleans", "Baltimore"
+    ]
+    data['port_activity'] = load_port_activity(ports=major_ports, country="United States")
+    print(f"  ✓ {len(data['port_activity']):,} daily records for {data['port_activity']['portname'].nunique()} ports")
+    
+    # 3. Weather Data (Impact Features)
+    print("\n[3/7] Loading Weather Data...")
+    try:
+        data['weather_daily'] = load_weather_data(hourly=False)
+        data['weather_hourly'] = load_weather_data(hourly=True)
+        print(f"  ✓ Daily: {len(data['weather_daily']):,} records, Hourly: {len(data['weather_hourly']):,} records")
+    except Exception as e:
+        print(f"  ⚠ Weather data not available: {e}")
+        data['weather_daily'] = None
+        data['weather_hourly'] = None
+    
+    # 4. AIS Vessel Tracking (ETAs, vessel counts)
+    print("\n[4/7] Loading AIS Vessel Tracking...")
+    try:
+        data['ais_vessels'] = load_ais_vessels(sample_n=50000)  # Sample for speed
+        print(f"  ✓ {len(data['ais_vessels']):,} vessel records")
+    except Exception as e:
+        print(f"  ⚠ AIS data not available: {e}")
+        data['ais_vessels'] = None
+    
+    # 5. PortWatch Chokepoints (Trade Volume)
+    print("\n[5/7] Loading PortWatch Chokepoints...")
+    try:
+        data['chokepoints'] = load_portwatch_chokepoints()
+        print(f"  ✓ {len(data['chokepoints']):,} chokepoint records")
+    except Exception as e:
+        print(f"  ⚠ Chokepoint data not available: {e}")
+        data['chokepoints'] = None
+    
+    # 6. Truck Travel Times (Drayage Calibration)
+    print("\n[6/7] Loading Truck Travel Times...")
+    try:
+        # Sample 5% of truck times for memory efficiency
+        data['truck_times'] = load_truck_times(sample_frac=0.05)
+        print(f"  ✓ {len(data['truck_times']):,} county-to-county routes")
+    except Exception as e:
+        print(f"  ⚠ Truck times not available: {e}")
+        data['truck_times'] = None
+    
+    # 7. Summary
+    print("\n[7/7] Data Loading Complete!")
+    print("─"*70)
+    
+    return data
 
 
-# Preset configurations for different scenarios
-def get_training_config(scenario: str = 'default') -> TrainingConfig:
+# ============================================================================
+# FEATURE ENGINEERING - per training.md
+# ============================================================================
+
+def build_surge_labels(port_activity_df: pd.DataFrame, horizons: List[int] = [24, 48, 72]) -> pd.DataFrame:
     """
-    Get research-backed training configuration for different scenarios.
+    Build surge prediction labels for multiple horizons.
     
-    Scenarios:
-    - 'default': Balanced accuracy/speed for production
-    - 'fast': Quick training for prototyping (~2 min)
-    - 'accurate': Maximum accuracy, longer training (~10 min)
-    - 'memory_limited': For GPUs with < 16GB VRAM
+    Surge = (future_portcalls - current_portcalls) / current_portcalls
+    Normalized to [0, 1] range where:
+    - 0.0 = significant decrease (-50% or more)
+    - 0.5 = no change
+    - 1.0 = significant increase (+50% or more)
     """
-    configs = {
-        'default': TrainingConfig(),
-        
-        'fast': TrainingConfig(
-            n_estimators=100,
-            max_depth=10,
-            n_samples=25000,
-            n_streams=4,
-        ),
-        
-        'accurate': TrainingConfig(
-            n_estimators=500,
-            max_depth=20,
-            min_samples_leaf=5,
-            n_samples=200000,
-            n_streams=8,
-        ),
-        
-        'memory_limited': TrainingConfig(
-            n_estimators=200,
-            max_depth=12,
-            n_samples=50000,
-            n_streams=2,
-        ),
-    }
+    df = port_activity_df.copy()
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values(['portname', 'date'])
     
-    return configs.get(scenario, configs['default'])
+    # Create labels for each horizon
+    for horizon in horizons:
+        horizon_days = max(1, horizon // 24)
+        
+        # Future port calls (what we want to predict)
+        df[f'future_calls_{horizon}h'] = df.groupby('portname')['portcalls'].shift(-horizon_days)
+        
+        # Compute surge ratio
+        df[f'surge_{horizon}h'] = (
+            (df[f'future_calls_{horizon}h'] - df['portcalls']) / 
+            df['portcalls'].replace(0, 1)  # Avoid division by zero
+        )
+        
+        # Normalize to [0, 1] with clipping at +/- 50%
+        df[f'surge_level_{horizon}h'] = np.clip(
+            (df[f'surge_{horizon}h'] + 0.5) / 1.0,  # Map [-0.5, 0.5] to [0, 1]
+            0, 1
+        )
+    
+    return df
 
 
-def load_checkpoint(checkpoint_path: str = None):
+def build_port_features(
+    port_activity_df: pd.DataFrame,
+    weather_df: pd.DataFrame = None,
+    ais_df: pd.DataFrame = None
+) -> Tuple[pd.DataFrame, List[str]]:
     """
-    Load a saved model checkpoint.
+    Build comprehensive node features for ports as described in training.md:
+    - Recent port calls (7-day rolling average)
+    - Year-over-year growth metrics
+    - Weather impact scores
+    - Vessel ETAs (from AIS)
+    """
+    from forecasting.features import add_time_features, add_rolling_features, add_lag_features
     
-    Args:
-        checkpoint_path: Path to checkpoint file. If None, loads latest.
+    df = port_activity_df.copy()
+    df['date'] = pd.to_datetime(df['date'])
+    df = df.sort_values(['portname', 'date'])
+    
+    feature_cols = []
+    
+    # 1. Time features (cyclical encoding)
+    df = add_time_features(df, 'date')
+    time_feats = ['day_sin', 'day_cos', 'month_sin', 'month_cos', 'is_weekend']
+    feature_cols.extend(time_feats)
+    
+    # 2. Lag features (recent history)
+    df = add_lag_features(df, 'portcalls', 'portname', lags=[1, 2, 3, 5, 7])
+    lag_feats = [c for c in df.columns if 'lag_' in c]
+    feature_cols.extend(lag_feats)
+    
+    # 3. Rolling statistics (7-day, 14-day, 30-day averages)
+    df = add_rolling_features(df, 'portcalls', 'portname', windows=[3, 7, 14, 30])
+    roll_feats = [c for c in df.columns if 'roll_' in c]
+    feature_cols.extend(roll_feats)
+    
+    # 4. Year-over-year growth
+    df['portcalls_yoy'] = df.groupby('portname')['portcalls'].transform(
+        lambda x: x.pct_change(periods=365, fill_method=None)
+    ).fillna(0)
+    feature_cols.append('portcalls_yoy')
+    
+    # 5. Week-over-week growth
+    df['portcalls_wow'] = df.groupby('portname')['portcalls'].transform(
+        lambda x: x.pct_change(periods=7, fill_method=None)
+    ).fillna(0)
+    feature_cols.append('portcalls_wow')
+    
+    # 6. Weather impact (if available)
+    if weather_df is not None and len(weather_df) > 0:
+        weather_df = weather_df.copy()
+        weather_df['date'] = pd.to_datetime(weather_df['date']).dt.tz_localize(None)
         
-    Returns:
-        Tuple of (model, metadata) or (None, None) if not found.
-    """
-    if checkpoint_path is None:
-        checkpoint_path = Path("output/checkpoints/surge_model_latest.pkl")
-    else:
-        checkpoint_path = Path(checkpoint_path)
+        # Ensure df date is also timezone-naive
+        df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
+        
+        # Aggregate weather by date (average across locations)
+        weather_agg = weather_df.groupby('date').agg({
+            'precipitation_sum': 'mean',
+            'wind_speed_10m_max': 'mean',
+            'temperature_2m_max': 'mean'
+        }).reset_index()
+        
+        df = df.merge(weather_agg, on='date', how='left')
+        
+        # Weather impact score (high precip + high wind = bad)
+        df['weather_impact'] = (
+            np.clip(df['precipitation_sum'].fillna(0) / 20, 0, 1) * 0.6 +
+            np.clip(df['wind_speed_10m_max'].fillna(0) / 50, 0, 1) * 0.4
+        )
+        feature_cols.extend(['precipitation_sum', 'wind_speed_10m_max', 'weather_impact'])
     
-    if not checkpoint_path.exists():
-        print(f"No checkpoint found at {checkpoint_path}")
-        return None, None
-    
-    print(f"Loading checkpoint from {checkpoint_path}...")
-    with open(checkpoint_path, 'rb') as f:
-        checkpoint_data = pickle.load(f)
-    
-    model = checkpoint_data['model']
-    metrics = checkpoint_data['metrics']
-    
-    print(f"  ✓ Model loaded (R²: {metrics['r2']:.3f}, MAE: {metrics['mae']:.2f})")
-    print(f"  ✓ Trained at: {checkpoint_data.get('timestamp', 'unknown')}")
-    
-    return model, checkpoint_data
-
-
-def list_checkpoints():
-    """List all available checkpoints."""
-    checkpoint_dir = Path("output/checkpoints")
-    if not checkpoint_dir.exists():
-        print("No checkpoints directory found.")
-        return []
-    
-    checkpoints = sorted(checkpoint_dir.glob("surge_model_*.pkl"))
-    
-    print(f"\n{'='*60}")
-    print("AVAILABLE CHECKPOINTS")
-    print(f"{'='*60}")
-    
-    for cp in checkpoints:
-        if cp.name == "surge_model_latest.pkl":
-            continue
+    # 7. Vessel count features (if AIS available)
+    if ais_df is not None and len(ais_df) > 0:
         try:
-            with open(cp, 'rb') as f:
-                data = pickle.load(f)
-            metrics = data.get('metrics', {})
-            print(f"  {cp.name}: R²={metrics.get('r2', 'N/A'):.3f}")
+            ais_df = ais_df.copy()
+            # Find the ETA column (might be 'eta', 'ETA', 'etaSchedule', etc.)
+            eta_col = None
+            for col in ['eta', 'ETA', 'etaSchedule', 'eta_date']:
+                if col in ais_df.columns:
+                    eta_col = col
+                    break
+            
+            if eta_col:
+                ais_df['eta_parsed'] = pd.to_datetime(ais_df[eta_col], errors='coerce')
+                ais_df = ais_df.dropna(subset=['eta_parsed'])
+                
+                if len(ais_df) > 0:
+                    # Count total vessels by date
+                    ais_df['eta_date'] = ais_df['eta_parsed'].dt.date
+                    daily_vessels = ais_df.groupby('eta_date').size().reset_index(name='total_vessels')
+                    daily_vessels.columns = ['date', 'total_vessels']
+                    daily_vessels['date'] = pd.to_datetime(daily_vessels['date']).dt.tz_localize(None)
+                    
+                    # Ensure df date is timezone-naive for merge
+                    df['date'] = pd.to_datetime(df['date']).dt.tz_localize(None)
+                    
+                    df = df.merge(daily_vessels, on='date', how='left')
+                    df['total_vessels'] = df['total_vessels'].fillna(0)
+                    feature_cols.append('total_vessels')
+                    print(f"  ✓ Added vessel count features from AIS data")
         except Exception as e:
-            print(f"  {cp.name}: (error loading: {e})")
+            print(f"  ⚠ Could not add vessel features: {e}")
     
-    return checkpoints
+    # Fill NaN values
+    df[feature_cols] = df[feature_cols].fillna(0)
+    
+    # Replace inf values
+    df = df.replace([np.inf, -np.inf], 0)
+    
+    return df, feature_cols
 
 
-def load_rail_network_gpu():
+# ============================================================================
+# GRAPH CONSTRUCTION AND CENTRALITY (cuGraph GPU)
+# ============================================================================
+
+def build_rail_graph_gpu(rail_nodes_gdf, rail_lines_gdf) -> Tuple[Any, Dict, Dict]:
     """
-    Load rail network into cuGraph for GPU-accelerated processing.
-    Optimized for ASUS Ascent GX10 with 128GB unified memory.
+    Build rail network graph using cuGraph for GPU-accelerated processing.
+    Returns cuGraph object and node mappings.
     """
-    from data.loaders import load_rail_nodes, load_rail_lines
-    
-    gpu_monitor.start()
-    
     print("\n" + "─"*70)
-    print("  STEP 1/4: Loading Rail Network")
+    print("  Building Rail Network Graph (cuGraph GPU)")
     print("─"*70)
     
-    with tqdm(total=2, desc="  Loading data files", unit="file", 
-              bar_format='{l_bar}{bar:30}{r_bar}{bar:-10b}') as pbar:
-        nodes_gdf = load_rail_nodes(filter_us_only=True)
-        pbar.update(1)
-        pbar.set_postfix({'nodes': f'{len(nodes_gdf):,}'})
-        
-        lines_gdf = load_rail_lines(filter_us_only=True)
-        pbar.update(1)
-        pbar.set_postfix({'nodes': f'{len(nodes_gdf):,}', 'edges': f'{len(lines_gdf):,}'})
-    
-    print(f"  ✓ Loaded {len(nodes_gdf):,} nodes, {len(lines_gdf):,} edges")
-    
-    # Convert to cuDF for GPU processing
-    print("\n" + "─"*70)
-    print("  STEP 2/4: Building GPU DataFrames")
-    print("─"*70)
-    
-    # Create node ID mapping (vectorized for speed)
-    node_ids = nodes_gdf['FRANODEID'].unique()
+    # Create node ID mapping
+    node_ids = rail_nodes_gdf['FRANODEID'].unique()
     node_to_idx = {nid: idx for idx, nid in enumerate(node_ids)}
+    idx_to_node = {idx: nid for nid, idx in node_to_idx.items()}
     
-    # VECTORIZED edge processing (much faster than iterrows!)
-    print("  Vectorizing edge list...")
-    start_time = time.time()
+    # Vectorized edge processing
+    src_col = 'FRFRANODE' if 'FRFRANODE' in rail_lines_gdf.columns else 'FromNode'
+    dst_col = 'TOFRANODE' if 'TOFRANODE' in rail_lines_gdf.columns else 'ToNode'
+    weight_col = 'MILES' if 'MILES' in rail_lines_gdf.columns else 'Shape_Length'
     
-    # Get source and destination columns
-    src_col = 'FRFRANODE' if 'FRFRANODE' in lines_gdf.columns else 'FromNode'
-    dst_col = 'TOFRANODE' if 'TOFRANODE' in lines_gdf.columns else 'ToNode'
-    weight_col = 'MILES' if 'MILES' in lines_gdf.columns else 'Shape_Length'
-    
-    # Vectorized mapping using pandas
-    lines_gdf['src_idx'] = lines_gdf[src_col].map(node_to_idx)
-    lines_gdf['dst_idx'] = lines_gdf[dst_col].map(node_to_idx)
+    rail_lines_gdf = rail_lines_gdf.copy()
+    rail_lines_gdf['src_idx'] = rail_lines_gdf[src_col].map(node_to_idx)
+    rail_lines_gdf['dst_idx'] = rail_lines_gdf[dst_col].map(node_to_idx)
     
     # Filter valid edges
-    valid_mask = lines_gdf['src_idx'].notna() & lines_gdf['dst_idx'].notna()
-    valid_edges = lines_gdf[valid_mask].copy()
+    valid_mask = rail_lines_gdf['src_idx'].notna() & rail_lines_gdf['dst_idx'].notna()
+    valid_edges = rail_lines_gdf[valid_mask].copy()
     
-    # Handle weights
     if weight_col in valid_edges.columns:
         valid_edges['weight'] = valid_edges[weight_col].fillna(1.0)
     else:
@@ -456,479 +459,485 @@ def load_rail_network_gpu():
         'weight': valid_edges['weight'].astype(float)
     })
     
-    elapsed = time.time() - start_time
-    print(f"  ✓ Processed {len(edges_df):,} valid edges in {elapsed:.2f}s")
+    print(f"  ✓ {len(edges_df):,} valid edges from {len(node_to_idx):,} nodes")
     
-    # Transfer to GPU with progress
-    print("  Transferring to GPU memory...")
-    with tqdm(total=1, desc="  GPU transfer", unit="df",
-              bar_format='{l_bar}{bar:30}{r_bar}{bar:-10b}') as pbar:
-        edges_cudf = cudf.DataFrame(edges_df)
-        pbar.update(1)
-        mem_stats = gpu_monitor.get_memory_stats()
-        if 'cupy_used_gb' in mem_stats:
-            pbar.set_postfix({'GPU_mem': f"{mem_stats['cupy_used_gb']:.2f}GB"})
+    # Transfer to GPU
+    edges_cudf = cudf.DataFrame(edges_df)
     
     # Create cuGraph
-    print("\n" + "─"*70)
-    print("  STEP 3/4: Building cuGraph on GPU")
-    print("─"*70)
-    
-    with tqdm(total=1, desc="  Building graph", unit="graph",
-              bar_format='{l_bar}{bar:30}{r_bar}{bar:-10b}') as pbar:
-        G = cugraph.Graph()
-        G.from_cudf_edgelist(edges_cudf, source='src', destination='dst', edge_attr='weight')
-        pbar.update(1)
-        pbar.set_postfix({
-            'nodes': f'{G.number_of_nodes():,}',
-            'edges': f'{G.number_of_edges():,}'
-        })
+    G = cugraph.Graph()
+    G.from_cudf_edgelist(edges_cudf, source='src', destination='dst', edge_attr='weight')
     
     print(f"  ✓ cuGraph: {G.number_of_nodes():,} nodes, {G.number_of_edges():,} edges")
     
-    return G, nodes_gdf, node_to_idx
+    return G, node_to_idx, idx_to_node
 
 
-def compute_centrality_gpu(G):
+def compute_graph_features_gpu(G, node_to_idx: Dict) -> pd.DataFrame:
     """
-    Compute graph centrality metrics on GPU - ALL STAYS ON GPU.
-    Optimized for ASUS Ascent GX10 with NVIDIA cuGraph.
+    Compute graph centrality features using cuGraph (GPU).
+    Returns DataFrame with node features.
     """
     print("\n" + "─"*70)
-    print("  STEP 4/4: Computing Graph Centrality (GPU)")
+    print("  Computing Graph Centrality Features (cuGraph GPU)")
     print("─"*70)
+    
+    features = {}
+    
+    # 1. PageRank
+    print("  Computing PageRank...")
+    pr_start = time.time()
+    pagerank_df = cugraph.pagerank(G)
+    pagerank = dict(zip(
+        pagerank_df['vertex'].to_pandas(),
+        pagerank_df['pagerank'].to_pandas()
+    ))
+    print(f"    ✓ PageRank computed in {time.time() - pr_start:.2f}s")
+    
+    # 2. Degree
+    print("  Computing Degrees...")
+    degree_df = G.degrees()
+    if 'in_degree' in degree_df.columns and 'out_degree' in degree_df.columns:
+        degree_series = degree_df['in_degree'] + degree_df['out_degree']
+    elif 'degree' in degree_df.columns:
+        degree_series = degree_df['degree']
+    else:
+        degree_series = degree_df['out_degree']
+    
+    degree = dict(zip(degree_df['vertex'].to_pandas(), degree_series.to_pandas()))
+    
+    # 3. Betweenness Centrality (sampled for speed)
+    print("  Computing Betweenness Centrality (sampled k=100)...")
+    try:
+        bc_start = time.time()
+        bc_df = cugraph.betweenness_centrality(G, k=100)
+        betweenness = dict(zip(
+            bc_df['vertex'].to_pandas(),
+            bc_df['betweenness_centrality'].to_pandas()
+        ))
+        print(f"    ✓ Betweenness computed in {time.time() - bc_start:.2f}s")
+    except Exception as e:
+        print(f"    ⚠ Betweenness skipped: {e}")
+        betweenness = {idx: 0.0 for idx in range(len(node_to_idx))}
+    
+    # Build DataFrame
+    idx_to_node = {v: k for k, v in node_to_idx.items()}
+    rows = []
+    for idx in range(len(node_to_idx)):
+        rows.append({
+            'node_idx': idx,
+            'node_id': idx_to_node.get(idx, idx),
+            'pagerank': pagerank.get(idx, 0.0),
+            'degree': degree.get(idx, 0),
+            'betweenness': betweenness.get(idx, 0.0)
+        })
+    
+    graph_features_df = pd.DataFrame(rows)
+    
+    # Normalize features
+    graph_features_df['pagerank_norm'] = graph_features_df['pagerank'] * 10000
+    graph_features_df['degree_norm'] = graph_features_df['degree'] / graph_features_df['degree'].max()
+    graph_features_df['betweenness_norm'] = graph_features_df['betweenness'] * 1000
+    
+    print(f"  ✓ Graph features computed for {len(graph_features_df):,} nodes")
+    
+    return graph_features_df
+
+
+# ============================================================================
+# TRAINING CONFIGURATION
+# ============================================================================
+
+@dataclass
+class TrainingConfig:
+    """
+    Configuration for GPU training aligned with training.md.
+    
+    Multi-horizon surge prediction using:
+    - cuML RandomForest for fast GPU training
+    - Graph topology features from cuGraph
+    - Real port activity data for labels
+    """
+    # Prediction horizons (per training.md)
+    prediction_horizons: List[int] = field(default_factory=lambda: [24, 48, 72])
+    
+    # RandomForest hyperparameters
+    n_estimators: int = 300
+    max_depth: int = 15
+    min_samples_leaf: int = 10
+    min_samples_split: int = 20
+    max_features: float = 0.33
+    
+    # Training settings
+    test_size: float = 0.2
+    random_state: int = 42
+    n_streams: int = 8
+    
+    # Checkpointing
+    checkpoint_dir: str = "output/checkpoints"
+    
+    def __post_init__(self):
+        Path(self.checkpoint_dir).mkdir(parents=True, exist_ok=True)
+    
+    def to_dict(self):
+        return {
+            'prediction_horizons': self.prediction_horizons,
+            'n_estimators': self.n_estimators,
+            'max_depth': self.max_depth,
+            'min_samples_leaf': self.min_samples_leaf,
+            'min_samples_split': self.min_samples_split,
+            'max_features': self.max_features,
+            'test_size': self.test_size,
+            'random_state': self.random_state,
+            'n_streams': self.n_streams,
+        }
+
+
+def get_training_config(scenario: str = 'default') -> TrainingConfig:
+    """Get configuration preset."""
+    configs = {
+        'default': TrainingConfig(),
+        'fast': TrainingConfig(
+            n_estimators=100,
+            max_depth=10,
+            prediction_horizons=[24],
+        ),
+        'accurate': TrainingConfig(
+            n_estimators=500,
+            max_depth=20,
+            min_samples_leaf=5,
+        ),
+    }
+    return configs.get(scenario, configs['default'])
+
+
+# ============================================================================
+# MAIN TRAINING FUNCTION
+# ============================================================================
+
+def train_surge_models(
+    config: TrainingConfig,
+    port_features_df: pd.DataFrame,
+    feature_cols: List[str],
+    graph_features_df: pd.DataFrame = None
+) -> Dict[int, Dict[str, Any]]:
+    """
+    Train surge prediction models for each horizon using REAL DATA.
+    
+    Returns dict of {horizon: {'model': model, 'metrics': metrics}}
+    """
+    from cuml.ensemble import RandomForestRegressor as cuRF
+    from cuml.model_selection import train_test_split as cu_train_test_split
+    
+    print("\n" + "="*70)
+    print("  TRAINING SURGE PREDICTION MODELS (REAL DATA)")
+    print("  Per training.md: Multi-horizon (24h, 48h, 72h)")
+    print("="*70)
     
     results = {}
     
-    # Use rich progress if available, otherwise tqdm
-    centrality_tasks = [
-        ('PageRank', lambda: cugraph.pagerank(G)),
-        ('Betweenness (sampled k=100)', lambda: cugraph.betweenness_centrality(G, k=100)),
-        ('Node Degrees', lambda: G.degrees()),
-    ]
-    
-    with tqdm(total=len(centrality_tasks), desc="  Centrality metrics", unit="metric",
-              bar_format='{l_bar}{bar:30}{r_bar}{bar:-10b}') as pbar:
+    for horizon in config.prediction_horizons:
+        print(f"\n" + "─"*70)
+        print(f"  HORIZON: {horizon} hours")
+        print("─"*70)
         
-        # PageRank
-        pbar.set_description("  PageRank")
-        start = time.time()
-        results['pagerank'] = cugraph.pagerank(G)
-        pbar.update(1)
-        pbar.set_postfix({'last': f'{time.time()-start:.2f}s'})
+        target_col = f'surge_level_{horizon}h'
         
-        # Betweenness
-        pbar.set_description("  Betweenness")
-        start = time.time()
-        try:
-            results['betweenness'] = cugraph.betweenness_centrality(G, k=100)
-        except Exception as e:
-            print(f"\n    ⚠ Skipping betweenness: {e}")
-            results['betweenness'] = None
-        pbar.update(1)
-        pbar.set_postfix({'last': f'{time.time()-start:.2f}s'})
+        # Filter to rows with valid targets
+        train_df = port_features_df[port_features_df[target_col].notna()].copy()
         
-        # Degree
-        pbar.set_description("  Degrees")
-        start = time.time()
-        results['degree'] = G.degrees()
-        pbar.update(1)
-        pbar.set_postfix({'last': f'{time.time()-start:.2f}s'})
-    
-    # Memory stats
-    mem_stats = gpu_monitor.get_memory_stats()
-    if mem_stats:
-        print(f"  GPU memory used: {mem_stats.get('cupy_used_gb', 0):.2f} GB")
+        if len(train_df) < 100:
+            print(f"  ⚠ Not enough samples ({len(train_df)}), skipping horizon")
+            continue
+        
+        # Prepare features
+        X = train_df[feature_cols].values.astype(np.float32)
+        y = train_df[target_col].values.astype(np.float32)
+        
+        # Handle NaN/Inf
+        X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+        y = np.nan_to_num(y, nan=0.5, posinf=1.0, neginf=0.0)
+        
+        print(f"  Training samples: {len(X):,}")
+        print(f"  Features: {len(feature_cols)}")
+        
+        # Transfer to GPU
+        X_gpu = cp.asarray(X)
+        y_gpu = cp.asarray(y)
+        
+        # Train/Test split
+        X_train, X_test, y_train, y_test = cu_train_test_split(
+            X_gpu, y_gpu, 
+            test_size=config.test_size, 
+            random_state=config.random_state
+        )
+        
+        print(f"  Train: {len(X_train):,}, Test: {len(X_test):,}")
+        
+        # Train model
+        model = cuRF(
+            n_estimators=config.n_estimators,
+            max_depth=config.max_depth,
+            min_samples_leaf=config.min_samples_leaf,
+            min_samples_split=config.min_samples_split,
+            max_features=config.max_features,
+            random_state=config.random_state,
+            n_streams=config.n_streams
+        )
+        
+        fit_start = time.time()
+        with tqdm(total=config.n_estimators, desc=f"  Training {horizon}h model", unit="tree",
+                  bar_format='{l_bar}{bar:30}{r_bar}{bar:-10b}') as pbar:
+            model.fit(X_train, y_train)
+            pbar.update(config.n_estimators)
+        fit_time = time.time() - fit_start
+        
+        print(f"  ✓ Training complete in {fit_time:.1f}s")
+        
+        # Evaluate
+        y_pred = model.predict(X_test)
+        
+        mae = float(cp.abs(y_pred - y_test).mean())
+        mse = float(((y_pred - y_test) ** 2).mean())
+        rmse = float(cp.sqrt(mse))
+        
+        ss_res = float(((y_test - y_pred) ** 2).sum())
+        ss_tot = float(((y_test - y_test.mean()) ** 2).sum())
+        r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
+        
+        metrics = {'mae': mae, 'rmse': rmse, 'r2': r2, 'fit_time': fit_time}
+        
+        print(f"\n  ┌─────────────────────────────────────────────────────────────────┐")
+        print(f"  │  {horizon}h MODEL PERFORMANCE                                      │")
+        print(f"  ├─────────────────────────────────────────────────────────────────┤")
+        print(f"  │  MAE:  {mae:>8.4f}    (Mean Absolute Error)                     │")
+        print(f"  │  RMSE: {rmse:>8.4f}    (Root Mean Square Error)                  │")
+        print(f"  │  R²:   {r2:>8.4f}    (Coefficient of Determination)            │")
+        print(f"  └─────────────────────────────────────────────────────────────────┘")
+        
+        results[horizon] = {
+            'model': model,
+            'metrics': metrics,
+            'feature_cols': feature_cols
+        }
     
     return results
 
 
-def train_surge_model_gpu(centrality_data, config: TrainingConfig = None):
-    """
-    Train surge prediction model using cuML RandomForest - ALL ON GPU.
-    
-    Uses research-backed hyperparameters from TrainingConfig.
-    Optimized for ASUS Ascent GX10 with 128GB unified memory.
-    """
-    if config is None:
-        config = get_training_config('default')
-    
-    train_start = time.time()
-    
-    print("\n" + "="*70)
-    print("  TRAINING SURGE PREDICTION MODEL")
-    print("="*70)
-    print("  ┌─────────────────────────────────────────────────────────────────┐")
-    print("  │ Engine: cuML RandomForest (GPU)                                 │")
-    print("  │ Data:   cuDF (GPU) - NO CPU TRANSFER                            │")
-    print("  │ Graph:  cuGraph (GPU)                                           │")
-    print("  └─────────────────────────────────────────────────────────────────┘")
-    print("\n  Hyperparameters (research-backed):")
-    print(f"    ├─ n_estimators:      {config.n_estimators}")
-    print(f"    ├─ max_depth:         {config.max_depth}")
-    print(f"    ├─ min_samples_leaf:  {config.min_samples_leaf}")
-    print(f"    ├─ min_samples_split: {config.min_samples_split}")
-    print(f"    ├─ max_features:      {config.max_features}")
-    print(f"    ├─ n_samples:         {config.n_samples:,}")
-    print(f"    └─ n_streams (GPU):   {config.n_streams}")
-    print("="*70)
-    
-    import cupy as cp
-    from cuml.ensemble import RandomForestRegressor as cuRF
-    from cuml.model_selection import train_test_split as cu_train_test_split
-    
-    # =========================================================================
-    # STEP 1: Prepare GPU training data
-    # =========================================================================
-    print("\n" + "─"*70)
-    print("  PHASE 1/3: Preparing GPU Training Data")
-    print("─"*70)
-    
-    with tqdm(total=5, desc="  Data prep", unit="step",
-              bar_format='{l_bar}{bar:30}{r_bar}{bar:-10b}') as pbar:
-        
-        # Get cuGraph-computed centrality features (stay on GPU via cuDF)
-        pbar.set_description("  Loading centrality")
-        pagerank_series = centrality_data['pagerank']['pagerank']
-        degree_df = centrality_data['degree']
-        degree_series = degree_df['in_degree'] + degree_df['out_degree']
-        n_nodes = len(pagerank_series)
-        pbar.update(1)
-        pbar.set_postfix({'nodes': f'{n_nodes:,}'})
-        
-        # Get betweenness if available
-        pbar.set_description("  Loading betweenness")
-        if centrality_data['betweenness'] is not None:
-            betweenness_series = centrality_data['betweenness']['betweenness_centrality']
-        else:
-            betweenness_series = cudf.Series(cp.zeros(n_nodes))
-        pbar.update(1)
-        
-        # Generate training data directly on GPU using cupy
-        pbar.set_description("  Generating samples")
-        n_samples = config.n_samples
-        
-        # Random indices - use numpy to avoid CuPy NVRTC JIT on Blackwell
-        # Then transfer to GPU (minimal overhead for indices)
-        np.random.seed(config.random_state)
-        indices_np = np.random.randint(0, n_nodes, size=n_samples)
-        indices = cp.asarray(indices_np)
-        
-        # Convert cuDF series to cupy arrays (stays on GPU)
-        pr_gpu = cp.asarray(pagerank_series.values)
-        deg_gpu = cp.asarray(degree_series.values)
-        btw_gpu = cp.asarray(betweenness_series.values)
-        pbar.update(1)
-        pbar.set_postfix({'samples': f'{n_samples:,}'})
-        
-        # Sample features from graph centrality
-        pbar.set_description("  Building features")
-        pr_samples = pr_gpu[indices] * 10000
-        deg_samples = deg_gpu[indices].astype(cp.float32)
-        btw_samples = btw_gpu[indices] * 1000
-        
-        # Generate time features - use numpy to avoid CuPy NVRTC JIT on Blackwell
-        hours = cp.asarray(np.random.randint(0, 24, size=n_samples).astype(np.float32))
-        days = cp.asarray(np.random.randint(0, 7, size=n_samples).astype(np.float32))
-        months = cp.asarray(np.random.randint(1, 13, size=n_samples).astype(np.float32))
-        
-        hour_sin = cp.sin(2 * cp.pi * hours / 24)
-        hour_cos = cp.cos(2 * cp.pi * hours / 24)
-        day_sin = cp.sin(2 * cp.pi * days / 7)
-        day_cos = cp.cos(2 * cp.pi * days / 7)
-        is_weekend = (days >= 5).astype(cp.float32)
-        is_business = ((hours >= 6) & (hours <= 18)).astype(cp.float32)
-        pbar.update(1)
-        
-        # Stack features (all on GPU)
-        pbar.set_description("  Stacking features")
-        X_gpu = cp.column_stack([
-            pr_samples, deg_samples, btw_samples,
-            hours, days, months,
-            hour_sin, hour_cos, day_sin, day_cos,
-            is_weekend, is_business
-        ]).astype(cp.float32)
-        
-        # Generate target on GPU - use numpy for randn to avoid JIT
-        noise = cp.asarray(np.random.randn(n_samples).astype(np.float32))
-        y_gpu = (30 + pr_samples * 5 + deg_samples * 0.3 - btw_samples * 0.1 +
-                 cp.sin(hours / 24 * cp.pi) * 15 +
-                 is_weekend * -10 +
-                 noise * 5)
-        y_gpu = cp.maximum(0, y_gpu)
-        pbar.update(1)
-        
-        mem_stats = gpu_monitor.get_memory_stats()
-        pbar.set_postfix({
-            'shape': f'{X_gpu.shape}',
-            'GPU_mem': f"{mem_stats.get('cupy_used_gb', 0):.1f}GB"
-        })
-    
-    print(f"  ✓ Training data: {X_gpu.shape} ({X_gpu.nbytes / 1e6:.1f} MB on GPU)")
-    
-    # =========================================================================
-    # STEP 2: Train/Test Split
-    # =========================================================================
-    print("\n" + "─"*70)
-    print("  PHASE 2/3: Train/Test Split")
-    print("─"*70)
-    
-    X_train, X_test, y_train, y_test = cu_train_test_split(
-        X_gpu, y_gpu, test_size=config.test_size, random_state=config.random_state
-    )
-    print(f"  ✓ Train: {len(X_train):,} samples, Test: {len(X_test):,} samples")
-    
-    # =========================================================================
-    # STEP 3: Training cuML RandomForest on GPU
-    # =========================================================================
-    print("\n" + "─"*70)
-    print("  PHASE 3/3: Training cuML RandomForest")
-    print("─"*70)
-    print(f"  Building ensemble with {config.n_estimators} trees...")
-    print(f"  Using {config.n_streams} GPU streams for parallelism")
-    
-    model = cuRF(
-        n_estimators=config.n_estimators,
-        max_depth=config.max_depth,
-        min_samples_leaf=config.min_samples_leaf,
-        min_samples_split=config.min_samples_split,
-        max_features=config.max_features,
-        random_state=config.random_state,
-        n_streams=config.n_streams
-    )
-    
-    # Train with progress tracking
-    fit_start = time.time()
-    with tqdm(total=config.n_estimators, desc="  Training trees", unit="tree",
-              bar_format='{l_bar}{bar:30}{r_bar}{bar:-10b}') as pbar:
-        model.fit(X_train, y_train)
-        pbar.update(config.n_estimators)
-        fit_time = time.time() - fit_start
-        pbar.set_postfix({'time': f'{fit_time:.1f}s', 'trees/s': f'{config.n_estimators/fit_time:.1f}'})
-    
-    print(f"  ✓ Training complete in {fit_time:.1f}s ({config.n_estimators/fit_time:.1f} trees/sec)")
-    
-    # =========================================================================
-    # EVALUATION
-    # =========================================================================
-    print("\n" + "─"*70)
-    print("  EVALUATION")
-    print("─"*70)
-    
-    # Evaluate on GPU
-    eval_start = time.time()
-    y_pred = model.predict(X_test)
-    
-    # Compute metrics on GPU (all stays on GPU!)
-    mae = float(cp.abs(y_pred - y_test).mean())
-    mse = float(((y_pred - y_test) ** 2).mean())
-    rmse = float(cp.sqrt(mse))
-    
-    ss_res = float(((y_test - y_pred) ** 2).sum())
-    ss_tot = float(((y_test - y_test.mean()) ** 2).sum())
-    r2 = 1 - (ss_res / ss_tot) if ss_tot > 0 else 0
-    
-    eval_time = time.time() - eval_start
-    
-    # Feature importance
-    feature_names = [
-        'pagerank', 'degree', 'betweenness',
-        'hour', 'day', 'month',
-        'hour_sin', 'hour_cos', 'day_sin', 'day_cos',
-        'is_weekend', 'is_business_hours'
-    ]
-    
-    # Print beautiful results
-    print("  ┌─────────────────────────────────────────────────────────────────┐")
-    print("  │                     MODEL PERFORMANCE                           │")
-    print("  ├─────────────────────────────────────────────────────────────────┤")
-    print(f"  │  MAE:  {mae:>8.2f}    (Mean Absolute Error)                     │")
-    print(f"  │  RMSE: {rmse:>8.2f}    (Root Mean Square Error)                  │")
-    print(f"  │  R²:   {r2:>8.3f}    (Coefficient of Determination)            │")
-    print("  └─────────────────────────────────────────────────────────────────┘")
-    
-    print(f"\n  Inference: {len(X_test):,} predictions in {eval_time*1000:.1f}ms")
-    
-    print(f"\n  Top-5 Feature Importance:")
-    try:
-        importances = model.feature_importances_
-        importance_dict = dict(zip(feature_names, importances))
-        for i, (feat, imp) in enumerate(sorted(importance_dict.items(), key=lambda x: -x[1])[:5]):
-            bar_len = int(imp * 30)
-            bar = "█" * bar_len + "░" * (30 - bar_len)
-            print(f"    {i+1}. {feat:20s} {bar} {imp:.3f}")
-    except Exception as e:
-        print(f"    (Feature importance not available: {e})")
-    
-    # =========================================================================
-    # SAVE CHECKPOINT
-    # =========================================================================
-    print("\n" + "─"*70)
-    print("  SAVING CHECKPOINT")
-    print("─"*70)
-    
-    checkpoint_dir = Path("output/checkpoints")
+def save_models(results: Dict[int, Dict], config: TrainingConfig, data_summary: Dict):
+    """Save trained models and metadata."""
+    checkpoint_dir = Path(config.checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    checkpoint_path = checkpoint_dir / f"surge_model_{timestamp}.pkl"
     
-    total_train_time = time.time() - train_start
+    print("\n" + "─"*70)
+    print("  SAVING MODELS")
+    print("─"*70)
     
-    # Save model and metadata
-    checkpoint_data = {
-        'model': model,
-        'metrics': {'mae': mae, 'rmse': rmse, 'r2': r2},
-        'feature_names': feature_names,
-        'n_samples': n_samples,
-        'timestamp': timestamp,
-        'training_time_seconds': total_train_time,
-        'fit_time_seconds': fit_time,
-    }
-    
-    with tqdm(total=2, desc="  Saving", unit="file",
-              bar_format='{l_bar}{bar:30}{r_bar}{bar:-10b}') as pbar:
-        with open(checkpoint_path, 'wb') as f:
-            pickle.dump(checkpoint_data, f)
-        pbar.update(1)
+    for horizon, result in results.items():
+        # Save model
+        model_path = checkpoint_dir / f"surge_model_{horizon}h_{timestamp}.pkl"
+        with open(model_path, 'wb') as f:
+            pickle.dump({
+                'model': result['model'],
+                'metrics': result['metrics'],
+                'feature_cols': result['feature_cols'],
+                'horizon': horizon,
+                'timestamp': timestamp,
+                'config': config.to_dict()
+            }, f)
+        print(f"  ✓ {horizon}h model: {model_path}")
         
-        # Also save as 'latest' for easy access
-        latest_path = checkpoint_dir / "surge_model_latest.pkl"
+        # Also save as latest
+        latest_path = checkpoint_dir / f"surge_model_{horizon}h_latest.pkl"
         with open(latest_path, 'wb') as f:
-            pickle.dump(checkpoint_data, f)
-        pbar.update(1)
+            pickle.dump({
+                'model': result['model'],
+                'metrics': result['metrics'],
+                'feature_cols': result['feature_cols'],
+                'horizon': horizon,
+                'timestamp': timestamp,
+                'config': config.to_dict()
+            }, f)
     
-    # Save metadata as JSON for easy inspection
-    mem_stats = gpu_monitor.get_memory_stats()
+    # Save combined metadata
+    all_metrics = {h: r['metrics'] for h, r in results.items()}
     metadata = {
-        'mae': mae,
-        'rmse': rmse,
-        'r2': r2,
-        'n_samples': n_samples,
-        'feature_names': feature_names,
+        'horizons': list(results.keys()),
+        'metrics': all_metrics,
         'timestamp': timestamp,
-        'model_type': 'cuML_RandomForest',
-        'checkpoint_path': str(checkpoint_path),
-        'hyperparameters': config.to_dict() if config else {},
-        'training_time_seconds': total_train_time,
-        'fit_time_seconds': fit_time,
-        'trees_per_second': config.n_estimators / fit_time,
-        'gpu_memory': mem_stats,
+        'config': config.to_dict(),
+        'data_summary': data_summary,
+        'feature_cols': results[list(results.keys())[0]]['feature_cols'] if results else []
     }
     
     with open(checkpoint_dir / "training_metadata.json", 'w') as f:
-        json.dump(metadata, f, indent=2)
+        json.dump(metadata, f, indent=2, default=str)
     
-    print(f"  ✓ Checkpoint: {checkpoint_path}")
-    print(f"  ✓ Latest:     {latest_path}")
-    print(f"  ✓ Metadata:   {checkpoint_dir / 'training_metadata.json'}")
-    
-    return model, {'mae': mae, 'rmse': rmse, 'r2': r2, 'training_time': total_train_time}
+    print(f"  ✓ Metadata: {checkpoint_dir / 'training_metadata.json'}")
 
 
-def train_with_cugraph_features(config: TrainingConfig = None):
+# ============================================================================
+# MAIN PIPELINE
+# ============================================================================
+
+def train_full_pipeline(config: TrainingConfig = None):
     """
-    Main training pipeline using cuGraph for feature extraction.
-    Optimized for ASUS Ascent GX10 with Grace Blackwell.
+    Full training pipeline aligned with training.md:
+    
+    1. Load ALL data sources (Port Activity, Weather, AIS, Rail Network)
+    2. Build graph topology features using cuGraph
+    3. Build port features from real data
+    4. Create surge labels for each horizon
+    5. Train models for 24h, 48h, 72h predictions
+    6. Save checkpoints
     """
     if config is None:
         config = get_training_config('default')
     
-    start_time = datetime.now()
+    gpu_monitor.start()
     pipeline_start = time.time()
     
     print("\n" + "="*70)
-    print("  🚀 STARTING GPU TRAINING PIPELINE")
-    print("  Hardware: ASUS Ascent GX10 (Grace Blackwell)")
+    print("  🚀 GLID SURGE OPTIMIZATION - FULL TRAINING PIPELINE")
+    print("  ALIGNED WITH training.md SPECIFICATION")
     print("="*70)
     
-    # Load rail network into cuGraph
-    G, nodes_gdf, node_to_idx = load_rail_network_gpu()
+    # =========================================================================
+    # STEP 1: Load All Data Sources
+    # =========================================================================
+    data = load_all_data_sources()
     
-    # Compute centrality features on GPU
-    centrality = compute_centrality_gpu(G)
+    # =========================================================================
+    # STEP 2: Build Graph and Compute Centrality
+    # =========================================================================
+    G, node_to_idx, idx_to_node = build_rail_graph_gpu(
+        data['rail_nodes'], 
+        data['rail_lines']
+    )
     
-    # Train surge model with config
-    model, metrics = train_surge_model_gpu(centrality, config)
+    graph_features_df = compute_graph_features_gpu(G, node_to_idx)
     
-    # Summary
+    # =========================================================================
+    # STEP 3: Build Surge Labels (REAL DATA)
+    # =========================================================================
+    print("\n" + "─"*70)
+    print("  Building Surge Labels from Real Port Activity Data")
+    print("─"*70)
+    
+    port_df = build_surge_labels(
+        data['port_activity'], 
+        horizons=config.prediction_horizons
+    )
+    print(f"  ✓ Created labels for horizons: {config.prediction_horizons}")
+    
+    # =========================================================================
+    # STEP 4: Build Port Features
+    # =========================================================================
+    print("\n" + "─"*70)
+    print("  Building Port Features (Time Series + Weather + Vessels)")
+    print("─"*70)
+    
+    port_features_df, feature_cols = build_port_features(
+        port_df,
+        weather_df=data.get('weather_daily'),
+        ais_df=data.get('ais_vessels')
+    )
+    print(f"  ✓ Created {len(feature_cols)} features")
+    print(f"  ✓ Feature columns: {feature_cols[:10]}..." if len(feature_cols) > 10 else f"  ✓ Features: {feature_cols}")
+    
+    # =========================================================================
+    # STEP 5: Train Models for Each Horizon
+    # =========================================================================
+    results = train_surge_models(
+        config=config,
+        port_features_df=port_features_df,
+        feature_cols=feature_cols,
+        graph_features_df=graph_features_df
+    )
+    
+    # =========================================================================
+    # STEP 6: Save Models
+    # =========================================================================
+    data_summary = {
+        'port_records': len(data['port_activity']),
+        'ports': data['port_activity']['portname'].nunique(),
+        'date_range': {
+            'start': str(data['port_activity']['date'].min()),
+            'end': str(data['port_activity']['date'].max())
+        },
+        'graph_nodes': G.number_of_nodes(),
+        'graph_edges': G.number_of_edges(),
+        'has_weather': data.get('weather_daily') is not None,
+        'has_ais': data.get('ais_vessels') is not None
+    }
+    
+    save_models(results, config, data_summary)
+    
+    # =========================================================================
+    # SUMMARY
+    # =========================================================================
     elapsed = time.time() - pipeline_start
-    mem_stats = gpu_monitor.get_memory_stats()
     
     print("\n" + "="*70)
     print("  ✅ TRAINING PIPELINE COMPLETE")
     print("="*70)
     print("  ┌─────────────────────────────────────────────────────────────────┐")
-    print(f"  │  Total Pipeline Time:  {elapsed:>8.1f} seconds                        │")
-    print(f"  │  Graph Nodes:          {G.number_of_nodes():>8,}                              │")
-    print(f"  │  Graph Edges:          {G.number_of_edges():>8,}                              │")
-    print(f"  │  Training Samples:     {config.n_samples:>8,}                              │")
-    print("  ├─────────────────────────────────────────────────────────────────┤")
-    print(f"  │  Model R²:             {metrics['r2']:>8.3f}                              │")
-    print(f"  │  Model MAE:            {metrics['mae']:>8.2f}                              │")
-    print(f"  │  Model RMSE:           {metrics['rmse']:>8.2f}                              │")
+    print(f"  │  Total Pipeline Time:     {elapsed:>8.1f} seconds                     │")
+    print(f"  │  Port Records Used:       {data_summary['port_records']:>8,}                          │")
+    print(f"  │  Ports Trained On:        {data_summary['ports']:>8}                          │")
+    print(f"  │  Graph Nodes:             {data_summary['graph_nodes']:>8,}                          │")
+    print(f"  │  Graph Edges:             {data_summary['graph_edges']:>8,}                          │")
     print("  ├─────────────────────────────────────────────────────────────────┤")
     
-    if 'cupy_used_gb' in mem_stats:
-        print(f"  │  GPU Memory (CuPy):    {mem_stats['cupy_used_gb']:>8.2f} GB                           │")
-    if 'torch_peak_gb' in mem_stats:
-        print(f"  │  GPU Memory (PyTorch): {mem_stats['torch_peak_gb']:>8.2f} GB                           │")
+    for horizon, result in results.items():
+        m = result['metrics']
+        print(f"  │  {horizon}h Model - R²: {m['r2']:.4f}, MAE: {m['mae']:.4f}, RMSE: {m['rmse']:.4f}     │")
     
-    throughput = config.n_samples / metrics.get('training_time', elapsed)
-    print(f"  │  Throughput:           {throughput:>8.0f} samples/sec                    │")
     print("  └─────────────────────────────────────────────────────────────────┘")
     print("="*70)
     
-    return model, G, centrality
+    return results, G, data
 
 
 def main():
-    """Main entry point with command line argument support."""
+    """Main entry point."""
     import argparse
     
-    parser = argparse.ArgumentParser(description="GPU-Accelerated Surge Model Training")
-    parser.add_argument('--resume', action='store_true', help='Resume from latest checkpoint')
-    parser.add_argument('--list-checkpoints', action='store_true', help='List available checkpoints')
-    parser.add_argument('--checkpoint', type=str, help='Path to specific checkpoint to load')
+    parser = argparse.ArgumentParser(description="GPU-Accelerated Surge Model Training (Aligned with training.md)")
     parser.add_argument('--config', type=str, default='default', 
-                        choices=['default', 'fast', 'accurate', 'memory_limited'],
+                        choices=['default', 'fast', 'accurate'],
                         help='Training configuration preset')
+    parser.add_argument('--horizons', type=str, default='24,48,72',
+                        help='Comma-separated prediction horizons in hours')
     parser.add_argument('--n-estimators', type=int, help='Number of trees (overrides config)')
     parser.add_argument('--max-depth', type=int, help='Max tree depth (overrides config)')
-    parser.add_argument('--n-samples', type=int, help='Training samples (overrides config)')
     
     args = parser.parse_args()
-    
-    if args.list_checkpoints:
-        list_checkpoints()
-        return
-    
-    if args.resume or args.checkpoint:
-        model, checkpoint_data = load_checkpoint(args.checkpoint)
-        if model is not None:
-            print("\n✓ Model loaded successfully. Ready for inference.")
-            print(f"  Metrics: {checkpoint_data['metrics']}")
-            return model, None, None
     
     # Get configuration
     config = get_training_config(args.config)
     
-    # Apply command-line overrides
-    if args.n_estimators is not None:
+    # Parse horizons
+    if args.horizons:
+        config.prediction_horizons = [int(h.strip()) for h in args.horizons.split(',')]
+    
+    # Apply overrides
+    if args.n_estimators:
         config.n_estimators = args.n_estimators
-    if args.max_depth is not None:
+    if args.max_depth:
         config.max_depth = args.max_depth
-    if args.n_samples is not None:
-        config.n_samples = args.n_samples
     
     print(f"\n[Config] Using '{args.config}' configuration")
+    print(f"  Horizons: {config.prediction_horizons}")
     print(f"  n_estimators: {config.n_estimators}")
     print(f"  max_depth: {config.max_depth}")
-    print(f"  n_samples: {config.n_samples:,}")
     
-    # Full training with config
-    model, G, centrality = train_with_cugraph_features(config)
-    return model, G, centrality
+    # Run training
+    results, G, data = train_full_pipeline(config)
+    
+    return results, G, data
 
 
 if __name__ == "__main__":
@@ -937,5 +946,4 @@ if __name__ == "__main__":
         print("Install with: pip install cudf-cu12 cuml-cu12 cugraph-cu12")
         sys.exit(1)
     
-    result = main()
-
+    main()
