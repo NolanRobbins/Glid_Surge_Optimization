@@ -46,6 +46,26 @@ export function calculateDistance(
 }
 
 /**
+ * Calculate total distance along a path of coordinates
+ * Sums up the distance between consecutive points
+ * @param coordinates Array of [lng, lat] coordinates
+ * @returns total distance in kilometers
+ */
+export function calculatePathDistance(
+  coordinates: [number, number][]
+): number {
+  if (coordinates.length < 2) {
+    return 0
+  }
+
+  let totalDistance = 0
+  for (let i = 0; i < coordinates.length - 1; i++) {
+    totalDistance += calculateDistance(coordinates[i], coordinates[i + 1])
+  }
+  return totalDistance
+}
+
+/**
  * Generate great circle route between two points
  * Creates intermediate points along the great circle arc
  * @param origin [longitude, latitude]

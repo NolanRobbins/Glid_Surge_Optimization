@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useEffect } from 'react'
-import { usePathname } from 'next/navigation'
+import { useState, useEffect, Suspense } from 'react'
+import { usePathname, useSearchParams } from 'next/navigation'
 import dynamic from 'next/dynamic'
 import { PortTrafficData } from '@/types/portTraffic'
 import { PortDatabaseEntry } from '@/api/portDatabaseService'
@@ -15,8 +15,9 @@ const ContainerPickupMap = dynamic(() => import('@/components/ContainerPickupMap
   ssr: false,
 })
 
-export default function NewPage() {
+function NewPageContent() {
   const pathname = usePathname()
+  const searchParams = useSearchParams()
   const [data, setData] = useState<PortTrafficData[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -25,7 +26,11 @@ export default function NewPage() {
   const [routePlanningVisible, setRoutePlanningVisible] = useState(true)
 
   const [hasCreatedPickup, setHasCreatedPickup] = useState(false)
-  const [currentFormStep, setCurrentFormStep] = useState<'pickup' | 'forecast' | 'routes'>('pickup')
+  // Initialize step from URL query parameter if present
+  const initialStep = searchParams?.get('step') as 'pickup' | 'forecast' | 'routes' | null
+  const [currentFormStep, setCurrentFormStep] = useState<'pickup' | 'forecast' | 'routes'>(
+    initialStep && ['pickup', 'forecast', 'routes'].includes(initialStep) ? initialStep : 'pickup'
+  )
 
   // Handle new route creation
   const handleRouteCreate = (newRoute: CustomerRoute) => {
@@ -226,7 +231,7 @@ export default function NewPage() {
   return (
     <main className="w-screen h-screen flex bg-gray-50 text-gray-800 relative">
       {/* Vertical Navigation Rail - Left Side */}
-      <div className="w-20 flex flex-col items-center justify-between py-5 z-[1000] h-full">
+      <div className="w-20 flex flex-col items-center justify-between py-8 z-[1000] h-full">
         <div className="flex flex-col items-center gap-3">
           {/* Logo/Avatar */}
           <div>
@@ -238,11 +243,11 @@ export default function NewPage() {
           </div>
           
           {/* Navigation buttons */}
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-1 p-1 rounded-full border border-gray-200">
             <a
               href="/"
               title="Routes View"
-              className={`inline-flex h-9 w-9 items-center justify-center rounded-full border border-gray-200 shadow-sm ring-1 ring-inset ring-gray-900/5 transition-colors ${
+              className={`inline-flex h-9 w-9 items-center justify-center rounded-full border border-gray-200 ring-1 ring-inset ring-gray-900/5 transition-colors ${
                 pathname === '/' 
                   ? 'bg-black text-white hover:bg-gray-900' 
                   : 'bg-white text-gray-500 hover:bg-gray-100 hover:text-gray-900'
@@ -256,7 +261,7 @@ export default function NewPage() {
             <a
               href="/newpage"
               title="Elevation View"
-              className={`inline-flex h-9 w-9 items-center justify-center rounded-full border border-gray-200 shadow-sm ring-1 ring-inset ring-gray-900/5 transition-colors ${
+              className={`inline-flex h-9 w-9 items-center justify-center rounded-full border border-gray-200 ring-1 ring-inset ring-gray-900/5 transition-colors ${
                 pathname === '/newpage' 
                   ? 'bg-black text-white hover:bg-gray-900' 
                   : 'bg-white text-gray-500 hover:bg-gray-100 hover:text-gray-900'
@@ -275,13 +280,14 @@ export default function NewPage() {
         {/* User Avatar */}
         <div className="flex flex-col items-center gap-3">
           <button
-            className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-200 bg-white text-gray-500 hover:bg-gray-100 hover:text-gray-900 shadow-sm ring-1 ring-inset ring-gray-900/5 transition-colors"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-200 bg-white hover:bg-gray-100 shadow-sm ring-1 ring-inset ring-gray-900/5 transition-colors overflow-hidden"
             title="User Profile"
           >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
-              <circle cx="12" cy="7" r="4"></circle>
-            </svg>
+            <img 
+              src="/kevinprofile.jpeg" 
+              alt="User Profile" 
+              className="w-full h-full object-cover"
+            />
           </button>
         </div>
       </div>
@@ -329,6 +335,7 @@ export default function NewPage() {
                 trafficData={data}
                 onRouteOptionSelect={handleRouteOptionSelect}
                 onStepChange={setCurrentFormStep}
+                initialStep={currentFormStep}
               />
             </div>
               </div>
@@ -363,3 +370,18 @@ export default function NewPage() {
       </main>
     )
   }
+
+export default function NewPage() {
+  return (
+    <Suspense fallback={
+      <main className="w-screen h-screen flex items-center justify-center bg-gray-50 text-gray-800">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading...</p>
+        </div>
+      </main>
+    }>
+      <NewPageContent />
+    </Suspense>
+  )
+}

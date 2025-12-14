@@ -9,6 +9,7 @@ import { PortTrafficData } from '@/types/portTraffic'
 import { calculatePortVesselMetrics } from '@/lib/vesselMetrics'
 import { PortDatabaseEntry } from '@/api/portDatabaseService'
 import { calculateTonMileCost, getPricingForRouteType } from '@/lib/pricing'
+import RouteOptionCard from './RouteOptionCard'
 
 // RouteOptionsList interfaces and types - we'll recreate the component inline
 interface TrafficLevel {
@@ -590,6 +591,7 @@ interface ContainerPickupFormProps {
   trafficData?: PortTrafficData[]
   onRouteOptionSelect?: (routeOption: RouteOption, customerRoute: CustomerRoute) => void
   onStepChange?: (step: 'pickup' | 'forecast' | 'routes') => void
+  initialStep?: 'pickup' | 'forecast' | 'routes'
 }
 
 interface TrafficProjection {
@@ -613,7 +615,7 @@ interface GeocodeResult {
   coordinates: [number, number]
 }
 
-export default function ContainerPickupForm({ onRouteCreate, allPorts = new Map(), trafficData = [], onRouteOptionSelect, onStepChange }: ContainerPickupFormProps) {
+export default function ContainerPickupForm({ onRouteCreate, allPorts = new Map(), trafficData = [], onRouteOptionSelect, onStepChange, initialStep = 'pickup' }: ContainerPickupFormProps) {
   const [pickupLocation, setPickupLocation] = useState('Los Angeles, CA')
   const [pickupCoordinates, setPickupCoordinates] = useState<[number, number] | null>([-118.2437, 34.0522]) // Los Angeles coordinates
   const [destinationLocation, setDestinationLocation] = useState('Fleet Yards Inc./DAMCO DISTRIBUTION INC')
@@ -622,7 +624,7 @@ export default function ContainerPickupForm({ onRouteCreate, allPorts = new Map(
   const [containerWeight, setContainerWeight] = useState<string>('') // in tons
   const [pickupDate, setPickupDate] = useState<string>('') // ISO date string
   const [estimatedShipArrival, setEstimatedShipArrival] = useState<string>('') // Time string (HH:mm)
-  const [step, setStep] = useState<'pickup' | 'forecast' | 'routes'>('pickup') // Stepper state
+  const [step, setStep] = useState<'pickup' | 'forecast' | 'routes'>(initialStep) // Stepper state
   const [vehicleType, setVehicleType] = useState<'raden' | 'gliderm'>('raden')
   const [createdRoute, setCreatedRoute] = useState<CustomerRoute | null>(null) // Store created route to show options
   const createdRouteRef = useRef<CustomerRoute | null>(null) // Ref to persist route across re-renders
@@ -1199,6 +1201,13 @@ export default function ContainerPickupForm({ onRouteCreate, allPorts = new Map(
       setIsCreatingRoute(false)
     }
   }
+
+  // Sync step with initialStep prop when it changes
+  useEffect(() => {
+    if (initialStep && initialStep !== step) {
+      setStep(initialStep)
+    }
+  }, [initialStep])
 
   // Notify parent of step changes
   useEffect(() => {
@@ -1983,7 +1992,7 @@ export default function ContainerPickupForm({ onRouteCreate, allPorts = new Map(
                   type="button"
                   onClick={handleNext}
                   disabled={!pickupLocation || !pickupCoordinates || !pickupDate || !containerWeight || parseFloat(containerWeight) <= 0 || !destinationLocation || !destinationCoordinates}
-                  className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors font-medium flex items-center justify-center gap-2"
+                  className="px-6 py-2 bg-black text-white rounded-lg hover:bg-gray-900 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors font-medium flex items-center justify-center gap-2"
                 >
                   Next
                   <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2586,7 +2595,7 @@ export default function ContainerPickupForm({ onRouteCreate, allPorts = new Map(
                 type="button"
                 onClick={handleCreateRoute}
                 disabled={isCreatingRoute || !isDestinationSelected}
-                className="px-6 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors font-medium flex items-center justify-center gap-2"
+                className="px-6 py-2 bg-black text-white rounded-lg hover:bg-gray-900 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors font-medium flex items-center justify-center gap-2"
               >
                 {isCreatingRoute ? (
                   <>
@@ -2611,93 +2620,124 @@ export default function ContainerPickupForm({ onRouteCreate, allPorts = new Map(
       {step === 'routes' && (
         <div className="flex-1 overflow-y-auto">
           <div className="max-w-4xl mx-auto p-6">
-            {routeToDisplay && routeToDisplay.route && routeToDisplay.route.coordinates && routeToDisplay.route.coordinates.length >= 2 && routeToDisplay.route.distance && routeToDisplay.route.distance > 0 ? (
-              <div className="space-y-6">
-                <div className="mb-4 flex items-center justify-between">
-                  <div>
-                    <h2 className="text-2xl font-semibold text-gray-900 mb-2">Step 3: Route Options</h2>
-                    <p className="text-sm text-gray-600">Select a route option to view details</p>
+            {(() => {
+              // Show dummy data if no route data available
+              if (!routeToDisplay || !routeToDisplay.route || !routeToDisplay.route.coordinates || routeToDisplay.route.coordinates.length < 2 || !routeToDisplay.route.distance || routeToDisplay.route.distance <= 0) {
+                return (
+                  <div className="space-y-6">
+                    <div className="mb-4 flex items-center justify-between">
+                      <div>
+                        <h2 className="text-2xl font-semibold text-gray-900 mb-2">Step 3: Optimized Routes</h2>
+                        <p className="text-sm text-gray-600">Review optimized route options</p>
+                      </div>
+                    </div>
+                    
+                    {/* Dummy Route Options using RouteOptionCard component */}
+                    <div className="space-y-4">
+                      <RouteOptionCard
+                        title="Route Option 1: Standard Route"
+                        description="Optimized for cost and time efficiency"
+                        distance={45.2}
+                        estimatedTime={1.2}
+                        cost={245.50}
+                      />
+                      <RouteOptionCard
+                        title="Route Option 2: Express Route"
+                        description="Faster delivery with priority handling"
+                        distance={42.8}
+                        estimatedTime={0.9}
+                        cost={298.75}
+                      />
+                      <RouteOptionCard
+                        title="Route Option 3: Economy Route"
+                        description="Most cost-effective option"
+                        distance={47.5}
+                        estimatedTime={1.5}
+                        cost={198.20}
+                      />
+                    </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setStep('forecast')}
-                    className="px-4 py-2 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors font-medium flex items-center justify-center gap-2"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                    </svg>
-                    Back
-                  </button>
-                </div>
+                )
+              }
+              
+              // Show actual route data if available
+              return (
+                <div className="space-y-6">
+                  <div className="mb-4 flex items-center justify-between">
+                    <div>
+                      <h2 className="text-2xl font-semibold text-gray-900 mb-2">Step 3: Route Options</h2>
+                      <p className="text-sm text-gray-600">Select a route option to view details</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setStep('forecast')}
+                      className="px-4 py-2 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 transition-colors font-medium flex items-center justify-center gap-2"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                      </svg>
+                      Back
+                    </button>
+                  </div>
 
-                {/* Route Options List */}
-                <RouteOptionsDisplay
-                  originPort={routeToDisplay.originPort}
-                  destinationPort={routeToDisplay.storageFacility || routeToDisplay.destinationPort}
-                  vehiclePickupTime={routeToDisplay.estimatedPickupTime || new Date()}
-                  containerWeight={parseFloat(containerWeight) || 1}
-                  estimatedTimeToStorage={(() => {
-                    // Ensure we have a valid estimatedDropoffTime
-                    if (routeToDisplay.estimatedDropoffTime) {
-                      console.log('RouteOptionsDisplay: Using existing estimatedDropoffTime:', {
-                        estimatedDropoffTime: routeToDisplay.estimatedDropoffTime.toISOString(),
+                  {/* Route Options List */}
+                  <RouteOptionsDisplay
+                    originPort={routeToDisplay.originPort}
+                    destinationPort={routeToDisplay.storageFacility || routeToDisplay.destinationPort}
+                    vehiclePickupTime={routeToDisplay.estimatedPickupTime || new Date()}
+                    containerWeight={parseFloat(containerWeight) || 1}
+                    estimatedTimeToStorage={(() => {
+                      // Ensure we have a valid estimatedDropoffTime
+                      if (routeToDisplay.estimatedDropoffTime) {
+                        console.log('RouteOptionsDisplay: Using existing estimatedDropoffTime:', {
+                          estimatedDropoffTime: routeToDisplay.estimatedDropoffTime.toISOString(),
+                          routeDistance: routeToDisplay.route?.distance,
+                          routeDistanceKm: routeToDisplay.route?.distance,
+                          routeDistanceMiles: routeToDisplay.route?.distance ? routeToDisplay.route.distance * 0.621371 : 0
+                        })
+                        return routeToDisplay.estimatedDropoffTime
+                      }
+                      // Calculate estimated time based on route distance if not set
+                      const routeDistanceKm = routeToDisplay.route?.distance || 50
+                      const routeDistanceMiles = routeDistanceKm * 0.621371
+                      const avgSpeedMph = 50
+                      const transitHours = routeDistanceMiles / avgSpeedMph
+                      const pickupTime = routeToDisplay.estimatedPickupTime || new Date()
+                      const calculated = new Date(pickupTime.getTime() + transitHours * 60 * 60 * 1000)
+                      console.log('RouteOptionsDisplay: Calculated estimatedDropoffTime:', {
+                        routeDistanceKm,
+                        routeDistanceMiles,
+                        transitHours,
+                        calculated: calculated.toISOString(),
+                        pickupTime: pickupTime.toISOString()
+                      })
+                      return calculated
+                    })()}
+                    containerArrivalAtPort={undefined}
+                    avgTimeInPort={avgTimeInPort}
+                    route={(() => {
+                      console.log('RouteOptionsDisplay: Route prop being passed:', {
+                        hasRoute: !!routeToDisplay.route,
                         routeDistance: routeToDisplay.route?.distance,
                         routeDistanceKm: routeToDisplay.route?.distance,
-                        routeDistanceMiles: routeToDisplay.route?.distance ? routeToDisplay.route.distance * 0.621371 : 0
+                        routeDistanceMiles: routeToDisplay.route?.distance ? routeToDisplay.route.distance * 0.621371 : 0,
+                        hasCoordinates: routeToDisplay.route?.coordinates?.length > 0,
+                        coordinateCount: routeToDisplay.route?.coordinates?.length || 0,
+                        routeOrigin: routeToDisplay.route?.origin,
+                        routeDestination: routeToDisplay.route?.destination,
+                        routeFull: routeToDisplay.route
                       })
-                      return routeToDisplay.estimatedDropoffTime
-                    }
-                    // Calculate estimated time based on route distance if not set
-                    const routeDistanceKm = routeToDisplay.route?.distance || 50
-                    const routeDistanceMiles = routeDistanceKm * 0.621371
-                    const avgSpeedMph = 50
-                    const transitHours = routeDistanceMiles / avgSpeedMph
-                    const pickupTime = routeToDisplay.estimatedPickupTime || new Date()
-                    const calculated = new Date(pickupTime.getTime() + transitHours * 60 * 60 * 1000)
-                    console.log('RouteOptionsDisplay: Calculated estimatedDropoffTime:', {
-                      routeDistanceKm,
-                      routeDistanceMiles,
-                      transitHours,
-                      calculated: calculated.toISOString(),
-                      pickupTime: pickupTime.toISOString()
-                    })
-                    return calculated
-                  })()}
-                  containerArrivalAtPort={undefined}
-                  avgTimeInPort={avgTimeInPort}
-                  route={(() => {
-                    console.log('RouteOptionsDisplay: Route prop being passed:', {
-                      hasRoute: !!routeToDisplay.route,
-                      routeDistance: routeToDisplay.route?.distance,
-                      routeDistanceKm: routeToDisplay.route?.distance,
-                      routeDistanceMiles: routeToDisplay.route?.distance ? routeToDisplay.route.distance * 0.621371 : 0,
-                      hasCoordinates: routeToDisplay.route?.coordinates?.length > 0,
-                      coordinateCount: routeToDisplay.route?.coordinates?.length || 0,
-                      routeOrigin: routeToDisplay.route?.origin,
-                      routeDestination: routeToDisplay.route?.destination,
-                      routeFull: routeToDisplay.route
-                    })
-                    return routeToDisplay.route
-                  })()}
-                  trafficData={trafficData}
-                  allPorts={allPorts}
-                  totalContainersOnShip={1000}
-                  containerPosition={'middle'}
-                  onRouteOptionSelect={onRouteOptionSelect ? (option) => onRouteOptionSelect(option, routeToDisplay) : undefined}
-                />
-              </div>
-            ) : (
-              <div className="text-center py-12">
-                <p className="text-gray-500 mb-4">No route data available. Please generate routes from Step 2.</p>
-                <button
-                  type="button"
-                  onClick={() => setStep('forecast')}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-                >
-                  Go Back to Forecast
-                </button>
-              </div>
-            )}
+                      return routeToDisplay.route
+                    })()}
+                    trafficData={trafficData}
+                    allPorts={allPorts}
+                    totalContainersOnShip={1000}
+                    containerPosition={'middle'}
+                    onRouteOptionSelect={onRouteOptionSelect ? (option) => onRouteOptionSelect(option, routeToDisplay) : undefined}
+                  />
+                </div>
+              )
+            })()}
           </div>
         </div>
       )}

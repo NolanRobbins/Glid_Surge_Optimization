@@ -4,7 +4,7 @@
 
 import { CustomerRoute } from '@/components/CustomerRoutesList'
 import { RoutePoint } from '@/lib/routeCalculation'
-import { calculateDistance } from '@/lib/routeCalculation'
+import { calculateDistance, calculatePathDistance } from '@/lib/routeCalculation'
 import syntheticData from '@/data/syntheticCustomerRoutes.json'
 
 interface SyntheticRouteData {
@@ -27,7 +27,13 @@ interface SyntheticRouteData {
   }
 }
 
+interface VehicleInfo {
+  name: string
+  description: string
+}
+
 interface SyntheticData {
+  vehicles?: Record<string, VehicleInfo>
   routes: SyntheticRouteData[]
   routePoints: Record<string, RoutePoint>
 }
@@ -93,15 +99,25 @@ export function loadSyntheticCustomerRoutes(): CustomerRoute[] {
 
     // Convert competitor route data if present
     if ('competitorRoute' in routeData && routeData.competitorRoute) {
-      const compRoute = routeData.competitorRoute as { origin: RoutePoint; destination: RoutePoint; coordinates: number[][] }
+      const compRoute = routeData.competitorRoute as { 
+        origin: RoutePoint
+        destination: RoutePoint
+        coordinates: number[][]
+        distance?: number
+      }
       const origin = compRoute.origin
       const destination = compRoute.destination
+      const coordinates = compRoute.coordinates as [number, number][]
+      
+      // Use stored distance if available, otherwise calculate path distance from coordinates
+      const distance = compRoute.distance ?? 
+        (coordinates.length > 0 ? calculatePathDistance(coordinates) : calculateDistance(origin.coordinates, destination.coordinates))
       
       route.competitorRoute = {
         origin,
         destination,
-        coordinates: compRoute.coordinates as [number, number][],
-        distance: calculateDistance(origin.coordinates, destination.coordinates),
+        coordinates,
+        distance,
       }
     }
 
@@ -115,4 +131,23 @@ export function loadSyntheticCustomerRoutes(): CustomerRoute[] {
 export function getSyntheticRoutePoints(): Record<string, RoutePoint> {
   const data = syntheticData as unknown as SyntheticData
   return data.routePoints
+}
+
+/**
+ * Get vehicle information from synthetic data
+ */
+export function getVehicleInfo(vehicleType?: string): VehicleInfo | null {
+  const data = syntheticData as unknown as SyntheticData
+  if (!vehicleType || !data.vehicles) {
+    return null
+  }
+  return data.vehicles[vehicleType] || null
+}
+
+/**
+ * Get all vehicles from synthetic data
+ */
+export function getAllVehicles(): Record<string, VehicleInfo> {
+  const data = syntheticData as unknown as SyntheticData
+  return data.vehicles || {}
 }
