@@ -283,10 +283,13 @@ function NewPageContent() {
             className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-200 bg-white hover:bg-gray-100 shadow-sm ring-1 ring-inset ring-gray-900/5 transition-colors overflow-hidden"
             title="User Profile"
           >
+<<<<<<< HEAD
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
               <circle cx="12" cy="7" r="4"></circle>
             </svg>
+=======
+>>>>>>> 9e835cc (new components to handle api responses)
             <img 
               src="/kevinprofile.jpeg" 
               alt="User Profile" 
@@ -373,7 +376,11 @@ function NewPageContent() {
         </div>
       </main>
     )
+<<<<<<< HEAD
 }
+=======
+  }
+>>>>>>> 9e835cc (new components to handle api responses)
 
 export default function NewPage() {
   return (

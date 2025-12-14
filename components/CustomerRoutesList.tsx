@@ -80,13 +80,19 @@ export default function CustomerRoutesList({ routes, onRouteSelect }: CustomerRo
   
   // Calculate costs for a route
   const calculateRouteCosts = (route: CustomerRoute) => {
+<<<<<<< HEAD
     let distanceKm = 0
+=======
+>>>>>>> 9e835cc (new components to handle api responses)
     let ourDistanceKm = 0
     let competitorDistanceKm = 0
     
-    // Try to get distance from route object
+    // Get our route distance
     if (route.route?.distance) {
+<<<<<<< HEAD
       distanceKm = route.route.distance
+=======
+>>>>>>> 9e835cc (new components to handle api responses)
       ourDistanceKm = route.route.distance
     } else {
       // Calculate distance from route points if available
@@ -94,7 +100,10 @@ export default function CustomerRoutesList({ routes, onRouteSelect }: CustomerRo
       const destPoint = findRoutePoint(route.storageFacility || route.destinationPort)
       
       if (originPoint && destPoint) {
+<<<<<<< HEAD
         distanceKm = calculateDistance(originPoint.coordinates, destPoint.coordinates)
+=======
+>>>>>>> 9e835cc (new components to handle api responses)
         ourDistanceKm = calculateDistance(originPoint.coordinates, destPoint.coordinates)
       }
     }
@@ -117,8 +126,29 @@ export default function CustomerRoutesList({ routes, onRouteSelect }: CustomerRo
       competitorDistanceKm = ourDistanceKm
     }
     
+    // Get competitor route distance (use road-based distance if available)
+    if (route.competitorRoute?.distance) {
+      competitorDistanceKm = route.competitorRoute.distance
+    } else if (route.competitorRoute?.coordinates && route.competitorRoute.coordinates.length > 0) {
+      // Calculate path distance from competitor route coordinates
+      let totalDistance = 0
+      for (let i = 0; i < route.competitorRoute.coordinates.length - 1; i++) {
+        totalDistance += calculateDistance(
+          route.competitorRoute.coordinates[i],
+          route.competitorRoute.coordinates[i + 1]
+        )
+      }
+      competitorDistanceKm = totalDistance
+    } else {
+      // Fallback to our route distance if competitor route distance not available
+      competitorDistanceKm = ourDistanceKm
+    }
+    
     // Convert to miles
+<<<<<<< HEAD
     const distanceMiles = distanceKm * 0.621371
+=======
+>>>>>>> 9e835cc (new components to handle api responses)
     const ourDistanceMiles = ourDistanceKm * 0.621371
     const competitorDistanceMiles = competitorDistanceKm * 0.621371
     
@@ -133,7 +163,11 @@ export default function CustomerRoutesList({ routes, onRouteSelect }: CustomerRo
     // Calculate our cost (using standard pricing)
     const ourCost = calculateTonMileCost(ourDistanceMiles, weightTons, PRICING.STANDARD)
     
+<<<<<<< HEAD
     // Calculate competitor cost
+=======
+    // Calculate competitor cost using competitor route distance
+>>>>>>> 9e835cc (new components to handle api responses)
     const competitorCost = calculateCompetitorCost(competitorDistanceMiles, weightTons)
     
     // Calculate savings
@@ -420,11 +454,19 @@ export default function CustomerRoutesList({ routes, onRouteSelect }: CustomerRo
               )}
             </div>
             
-            {/* Cost Estimates */}
-            {(() => {
-              const costs = calculateRouteCosts(selectedRoute)
-              if (!costs) return null
+            {/* Generate Optimized Routes Button */}
+            <div className="pt-4 border-t border-gray-200">
+              <button
+                type="button"
+                onClick={() => {
+                  setShowOptimizedRoutes(!showOptimizedRoutes)
+                }}
+                className="w-full px-4 py-2 bg-black text-white text-sm font-medium rounded-lg hover:bg-gray-900 transition-colors"
+              >
+                Generate optimized routes
+              </button>
               
+<<<<<<< HEAD
               return (
                 <div className="pt-4 border-t border-gray-200">
                   {/* Generate Optimized Routes Button */}
@@ -506,9 +548,44 @@ export default function CustomerRoutesList({ routes, onRouteSelect }: CustomerRo
                       </div>
                     </div>
                   </div>
+=======
+              {/* Route Option Cards */}
+              {showOptimizedRoutes && (
+                <div className="mt-4 space-y-4">
+                  <RouteOptionCard
+                    title="Standard Route"
+                    description="Scheduled pickup time"
+                    distance={24.2}
+                    estimatedTime={0.5}
+                    cost={164.52}
+                    optimizationLevel="good"
+                    departureTime="Dec 13, 5:31 PM"
+                    arrivalTime="Dec 13, 6:00 PM"
+                  />
+                  <RouteOptionCard
+                    title="Express Route"
+                    description="Faster delivery with priority handling"
+                    distance={22.8}
+                    estimatedTime={0.4}
+                    cost={198.75}
+                    optimizationLevel="optimal"
+                    departureTime="Dec 13, 5:15 PM"
+                    arrivalTime="Dec 13, 5:39 PM"
+                  />
+                  <RouteOptionCard
+                    title="Economy Route"
+                    description="Most cost-effective option"
+                    distance={26.5}
+                    estimatedTime={0.7}
+                    cost={142.20}
+                    optimizationLevel="standard"
+                    departureTime="Dec 13, 5:45 PM"
+                    arrivalTime="Dec 13, 6:27 PM"
+                  />
+>>>>>>> 9e835cc (new components to handle api responses)
                 </div>
-              )
-            })()}
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -692,3 +769,4 @@ export default function CustomerRoutesList({ routes, onRouteSelect }: CustomerRo
     </div>
   )
 }
+

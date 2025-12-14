@@ -38,9 +38,15 @@ export default function RouteOptionCard({
     }
   }
 
+<<<<<<< HEAD
   const displayOptimizationLabel =
     optimizationLabel ||
     (optimizationLevel === 'optimal' ? 'Optimal' : optimizationLevel === 'good' ? 'Good' : 'Standard')
+=======
+  const displayOptimizationLabel = optimizationLabel || 
+    (optimizationLevel === 'optimal' ? 'Optimal' : 
+     optimizationLevel === 'good' ? 'Good' : 'Standard')
+>>>>>>> 9e835cc (new components to handle api responses)
 
   return (
     <div
@@ -54,9 +60,13 @@ export default function RouteOptionCard({
           <div className="flex items-center gap-2">
             <h4 className="text-sm font-semibold text-gray-900">{title}</h4>
             <span
+<<<<<<< HEAD
               className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${getOptimizationBadgeClass(
                 optimizationLevel
               )}`}
+=======
+              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium border ${getOptimizationBadgeClass(optimizationLevel)}`}
+>>>>>>> 9e835cc (new components to handle api responses)
               title={`${displayOptimizationLabel} optimization level`}
             >
               {displayOptimizationLabel}
@@ -99,4 +109,7 @@ export default function RouteOptionCard({
   )
 }
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> 9e835cc (new components to handle api responses)
