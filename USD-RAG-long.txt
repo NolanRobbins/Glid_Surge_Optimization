@@ -1,0 +1,119 @@
+# OSP Budget Justification - RAG Pipeline Technical Deep Dive
+
+## 1. Project Overview & Business Problem
+**Goal:** Automate the creation of budget justification narratives for grant proposals.
+**Problem:** Researchers spend excessive time writing repetitive justifications. Manual drafts are inconsistent and error-prone.
+**Solution:** A **Feedback-Aware Retrieval-Augmented Generation (RAG)** system that generates drafts based on a budget Excel file, learning from past successful proposals and human corrections.
+
+---
+
+## 2. High-Level Architecture
+The system follows a "Filestore-First" architecture for robustness, decoupled into microservices (API, Worker, Database, MinIO, Ollama).
+
+```mermaid
+[User] -> [API] -> [Database (Job Created)]
+                    |
+              [Worker Service]
+                    |
+            1. Download Budget (MinIO)
+                    |
+            2. RAG Retrieval (Vector DB) <--- [Feedback Loop: Corrected Docs]
+                    |
+            3. Prompt Engineering (Context Optimization)
+                    |
+            4. LLM Generation (Ollama / Qwen 2.5)
+                    |
+            5. Upload Result (MinIO) -> [Database (Job Completed)]
+```
+
+---
+
+## 3. Core Components Deep Dive
+
+### A. The Retrieval Engine (`core/rag/retriever.py`)
+This is the "brain" of the RAG system. It finds relevant past examples to guide the LLM.
+
+*   **Class:** `FeedbackAwareRetriever`
+*   **Embedding Model:** `sentence-transformers/all-MiniLM-L6-v2`. This creates 384-dimensional vectors from text.
+*   **Storage:** A lightweight pickle cache (`data/rag_cache.pkl`) for embeddings, backed by SQLite/MinIO for persistent storage of the actual documents.
+*   **Key Features:**
+    1.  **Smart Chunking:** It doesn't just embed the whole document. It chunks budget data by **Category** (e.g., "Materials", "Travel") or **Row**. This allows the system to find specific justifications for specific types of expenses.
+    2.  **Feedback Loop:** The system stores "Triplets":
+        *   `Input Budget` (The raw data)
+        *   `LLM Draft` (What the AI wrote)
+        *   `Human Corrected` (The "Gold Standard")
+        *   *Mechanism:* When retrieval happens, it prioritizes the `Human Corrected` version. If a user uploads a correction, `add_example()` is called to index this new "truth," effectively teaching the model the preferred style.
+    3.  **Recency Bias:** A mathematical weight is added to newer examples, ensuring the system adapts to changing regulations or preferences over time.
+    4.  **Query Expansion:** Uses the LLM to rewrite raw budget rows into a descriptive search query (e.g., "International travel budget for field research" instead of just "$5000").
+
+### B. The Generation Engine (`core/jobs/processor.py`)
+This component orchestrates the actual text generation.
+
+*   **LLM Engine:** Local **Ollama** instance running `qwen2.5:32b-instruct-q4_K_M`.
+*   **Context Window:** configured to **16k tokens** (`num_ctx: 16384`) to handle large budgets.
+*   **Prompt Engineering Strategy:**
+    *   **Token Optimization:** The processor doesn't dump raw data blindly.
+        *   `_format_budget_items`: Filters out empty Excel columns and irrelevant "Unnamed" fields.
+        *   `_summarize_budget`: Creates a ~200 token summary of the retrieved examples instead of injecting their full 3000+ token content.
+        *   `_extract_structure_pattern`: Extracts metadata like "Formal tone, bullet points" to guide the LLM's style without using up context.
+    *   **Prompt Template:** stored in `core/prompts/budget_justification_v1.txt`.
+*   **Batching Logic:** If a budget exceeds the token limit (even with optimization), the processor splits items into batches (default size: 25 items), generates justifications for each batch, and merges them.
+
+### C. Data Management (`core/documents/service.py`)
+*   **Pattern:** **Filestore-First**.
+    *   Files are uploaded to MinIO *before* a database record is created.
+    *   If the upload fails, the operation aborts (no "phantom" DB records).
+    *   If the DB insert fails, the file is automatically cleaned up from MinIO.
+*   **File Types:**
+    *   `budget`: The input Excel file.
+    *   `generated`: The LLM output (Word doc).
+    *   `corrected`: The user's edited version (Word doc) - used for training.
+
+---
+
+## 4. The Workflow Step-by-Step
+
+1.  **Ingestion:** User uploads `budget.xlsx`.
+    *   API validates size (<20MB).
+    *   Saves to MinIO: `documents/budget/{uuid}.xlsx`.
+2.  **Job Processing:**
+    *   Worker picks up the job.
+    *   Downloads Excel from MinIO.
+    *   Parses Excel into a list of dictionaries (JSON-like structure).
+3.  **Retrieval:**
+    *   The `FeedbackAwareRetriever` converts the current budget into a vector.
+    *   It performs a Cosine Similarity search against the vector store.
+    *   It retrieves the Top-K (default 3) most similar *past* budgets that have corrections.
+4.  **Prompt Construction:**
+    *   Combines: `[System Instructions]` + `[Current Budget Data]` + `[Retrieved Examples (Summarized)]`.
+5.  **Generation:**
+    *   Sends prompt to Ollama.
+    *   Receives raw Markdown text.
+6.  **Post-Processing:**
+    *   Converts Markdown to a formatted Word Document (`.docx`).
+    *   Uploads to MinIO: `documents/generated/{uuid}.docx`.
+7.  **Feedback (The "Learning" Step):**
+    *   User downloads the doc, edits it, and uploads `final_v1.docx`.
+    *   System links `budget_id` + `corrected_id`.
+    *   Retriever indexes this new pair. Next time someone has a similar budget, this specific correction will influence the generation.
+
+---
+
+## 5. Key Metrics & Optimization Techniques used
+
+*   **Precision/Recall:** Evaluated during retrieval tuning to ensure relevant examples are found.
+*   **Token Efficiency:**
+    *   *Problem:* Full RAG examples often exceed context windows (3 examples * 3k tokens = 9k tokens just for context).
+    *   *Solution:* We strip down examples to their semantic core (Summary + Style Sample), reducing token load by ~70%.
+*   **Latency:**
+    *   Generation can be slow (30s+). We use async job queues (Redis/Celery pattern) so the API doesn't hang.
+    *   Retrieval is optimized using `numpy` for fast vector math.
+
+---
+
+## 6. Code References for Study
+
+*   **Retriever Logic:** `core/rag/retriever.py` (Lines 24-126)
+*   **Generation Orchestration:** `core/jobs/processor.py` (Lines 439-572)
+*   **LLM Connection:** `core/llm/adapters/ollama_adapter.py`
+*   **Document Uploads:** `core/documents/service.py`

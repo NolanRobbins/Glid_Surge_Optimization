@@ -1,0 +1,42 @@
+## Project: Glid Surge Optimization (GNN-Based Intermodal Logistics)
+
+### **The Business Problem**
+The core challenge was optimizing the operations of **Glid**, an autonomous dual-mode vehicle (road + rail), in the face of unpredictable supply chain congestion.
+*   **The Bottleneck:** US Ports and Rail Terminals experience massive "surges" where congestion spikes 300-400% above normal, trapping containers and incurring millions in **demurrage fees (storage costs)** and late penalties.
+*   **The Opportunity:** Glid vehicles can dynamically switch between road (flexible but expensive) and rail (efficient but rigid).
+*   **The Goal:** Build an AI "Brain" that predicts these surges 24-72 hours in advance and recommends the optimal **mode (Rail vs. Road)** and **route** to minimize total landed cost.
+
+### **The AI Solution: Multi-Task Graph Neural Network (GNN)**
+
+I designed and trained a **Spatio-Temporal Graph Neural Network** to serve as the system's forecasting engine.
+
+#### **1. Data Engineering & Graph Construction**
+*   **Topology:** I built a massive heterogenous graph representing the US logistics network:
+    *   **Nodes:** ~197k rail nodes (junctions, terminals) + 106 US Ports.
+    *   **Edges:** ~235k rail segments + "drayage" (road) connections.
+*   **GPU Acceleration:** Used **NVIDIA RAPIDS cuML** (k-Nearest Neighbors) to instantly map ports/customers to the nearest rail heads, overcoming a massive CPU bottleneck in graph construction.
+*   **Dynamic Features:** Each node carried a 22-dimensional feature vector updating daily:
+    *   **Temporal:** Lags (1/7/14/30 days), rolling means/stds of port activity, and seasonality embeddings.
+    *   **Structural:** PageRank and Betweenness Centrality to identify network chokepoints.
+
+#### **2. Model Architecture (The "Brain")**
+*   **Algorithm:** **GraphSAGE (SAGEConv)** – A spatially inductive GNN approach.
+    *   **Why GraphSAGE?** It uses **message passing (BFS-style)** to aggregate congestion signals from neighbors. A surge at the Port of LA doesn't just stay there; it propagates inland to rail yards. The model learns these ripple effects.
+*   **Multi-Task Learning:** The model featured 5 specific output heads:
+    *   **Primary:** Port Surge Risk (0-1 score).
+    *   **Secondary:** Rail Congestion, Terminal Utilization, Drayage Delay, and Chokepoint Risk.
+*   **Loss Function:** A custom **Business-Aware Loss** that weighted errors based on real-world impact (e.g., missing a high-surge event is 5x worse than a false alarm due to storage costs).
+
+#### **3. Deployment & Optimization (The "Action")**
+*   **Inference Pipeline:** The GNN runs daily to update "risk weights" across the graph.
+*   **Routing Logic:** The predictions feed into a standard **Dijkstra’s Algorithm** (via NetworkX) which calculates the path of least resistance:
+    *   *Scenario A (Low Risk):* "Route via Rail (Cheapest/Cleanest)."
+    *   *Scenario B (High Surge Predicted):* "Bypass the rail terminal; route via Road to the secondary yard to avoid the 3-day bottleneck."
+*   **Performance:**
+    *   **Accuracy:** Achieved **0.08 MAE** on surge scoring.
+    *   **Speed:** Inference for the full 197k-node graph runs in **<200ms** on NVIDIA GPUs using **TF32** precision.
+
+### **Impact & Value**
+*   **Operational Agility:** Transformed a static routing system into a dynamic, predictive one.
+*   **Cost Savings:** Directly reduced potential demurrage fees by proactively rerouting Glid vehicles *before* they got stuck in congestion.
+*   **Scalability:** The solution scales to the entire North American rail network without retraining, thanks to the inductive nature of GraphSAGE.

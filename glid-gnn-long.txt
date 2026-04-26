@@ -1,0 +1,103 @@
+# Glid Surge Optimization: AI-Driven Intermodal Logistics
+## Detailed Technical Breakdown & Study Guide
+
+### 1. The Business Problem: Why This Exists
+**Context:** Global supply chains face massive, unpredictable congestion "surges" at ports and rail terminals. These aren't just traffic jams; they are multi-day logistical nightmares where containers sit idle, accruing massive fees.
+*   **The Pain Point:** **Demurrage & Detention Fees**. When a container sits at a port past its free time (usually 3-5 days), the cargo owner is charged daily penalties ($100-$300/day).
+*   **The Glid Solution:** Glid is an autonomous vehicle that can drive on **Roads** (flexible, last-mile) and hop onto **Rail** (efficient, long-haul).
+*   **The Challenge:** To maximize efficiency, Glid needs to know *when* to use rail and *where* to get on/off. If a rail terminal is congested, it's cheaper to drive 50 miles to the next one.
+*   **Your Role:** You built the **"Brain" (GNN)** that predicts these surges 24-72 hours in advance, allowing the routing engine to make smart, cost-saving decisions.
+
+---
+
+### 2. The Solution Architecture: A "Two-Brain" Approach
+The system combines deep learning (intuition) with classical algorithms (logic).
+
+#### **Part A: The GNN (The Intuition)**
+*   **Goal:** Predict **Surge Risk (0.0 - 1.0)** for every node in the network.
+*   **Input:** The raw state of the network (Port Activity, Weather, Rail Traffic).
+*   **Output:** A "Weight" or "Cost Multiplier" for every edge in the graph.
+    *   *Normal:* Edge weight = 1.0 (Standard cost/time).
+    *   *Surge:* Edge weight = 5.0 (High cost/delay).
+
+#### **Part B: The Routing Engine (The Navigator)**
+*   **Goal:** Find the optimal path from A to B.
+*   **Algorithm:** **Dijkstra’s Algorithm** (via NetworkX).
+*   **Process:**
+    1.  Take the graph with updated weights from the GNN.
+    2.  Calculate the path of least resistance.
+    3.  Output a route: "Drive 20 miles to Terminal B, switch to Rail, exit at Terminal D."
+
+---
+
+### 3. Data Engineering: Building the Graph
+You didn't just train a model; you built a digital twin of the US rail network.
+
+#### **A. The Nodes (The "Places")**
+*   **106 US Ports:** Major entry points (LA/Long Beach, NY/NJ, Savannah).
+*   **~197k Rail Nodes:** Junctions, switches, and terminals from US DOT data.
+*   **Terminals:** Intermodal yards where Glid can switch modes.
+
+#### **B. The Edges (The "Roads & Rails")**
+*   **Rail Edges:** ~235k segments of track.
+*   **Drayage (Road) Edges:** Connections between ports/customers and the nearest rail heads.
+    *   **Challenge:** Calculating distances between 100k+ points is slow ($O(N^2)$).
+    *   **Solution:** Used **NVIDIA RAPIDS cuML (k-Nearest Neighbors)** to perform this spatial join on the GPU, accelerating graph construction by orders of magnitude.
+
+#### **C. Node Features (The "State")**
+Every node has a dynamic **22-dimensional feature vector**:
+1.  **Temporal (Time-Series):**
+    *   **Lags:** Activity from 1, 7, 14, 30 days ago.
+    *   **Rolling Stats:** Mean/Std Dev of activity over 7/14/30 days.
+    *   **Seasonality:** Sine/Cosine encoding of Day/Month/Quarter.
+    *   **Trends:** Year-over-Year change.
+2.  **Structural (Graph Theory):**
+    *   **PageRank:** Measures global importance (is this a hub?).
+    *   **Betweenness Centrality:** Measures "chokepoint" potential (do many paths pass through here?).
+    *   **Node Type:** One-hot encoding (Port vs. Terminal).
+
+---
+
+### 4. Model Architecture: GraphSAGE
+You used **GraphSAGE (Spatially Inductive Graph Neural Network)**.
+
+*   **Why GraphSAGE?**
+    *   **Inductive:** It learns *how* to aggregate data, not just the data itself. This means you can add new nodes (e.g., a new terminal) without retraining the whole model.
+    *   **Message Passing (BFS):** It works like a ripple effect.
+        *   *Layer 1:* Node A learns from immediate neighbors (B, C).
+        *   *Layer 2:* Node A learns from neighbors' neighbors (D, E).
+        *   *Layer 3:* Node A integrates signals from 3 hops away.
+    *   This allows the model to "see" a surge at a port and understand how it will propagate inland to rail yards.
+
+*   **The Setup:**
+    *   **Input Dimension:** 22 features.
+    *   **Hidden Layers:** 3x `SAGEConv` layers (256 units each).
+    *   **Normalization:** BatchNorm (stabilizes training).
+    *   **Regularization:** Dropout (0.2) to prevent overfitting.
+    *   **Heads:** 5 distinct output heads (Linear -> ReLU -> Dropout -> Linear -> Sigmoid).
+
+---
+
+### 5. Training Strategy: Temporal Split
+You treated the data as a timeline to avoid "cheating" (data leakage).
+
+1.  **Snapshots:** Created daily snapshots of the graph state.
+2.  **Train/Val/Test Split:**
+    *   *Train:* Jan 2019 - Dec 2022.
+    *   *Val:* Jan 2023 - Jun 2023.
+    *   *Test:* Jul 2023 - Present.
+3.  **Loss Function:**
+    *   **Primary:** MSE (Mean Squared Error) on the Surge Score.
+    *   **Business Proxy:** A custom loss function that penalizes errors based on their real-world cost (Storage Fees, Late Penalties, Empty Miles).
+4.  **Hardware:** Trained on NVIDIA GPUs with **TF32** enabled for faster matrix multiplication.
+
+---
+
+### 6. Key Metrics & Impact
+*   **Surge Prediction (Regression):** MAE of **0.08** (on a 0-1 scale).
+*   **Mode Selection (Classification):** >80% accuracy in recommending the correct mode (Rail vs. Road).
+*   **Ranking (Prioritization):** High NDCG score, meaning the model correctly identifies the *most* critical bottlenecks.
+*   **Speed:** Inference takes **<200ms** for the full network, enabling real-time routing decisions.
+
+### 7. Summary for Interviews
+"I designed the AI brain for an autonomous logistics vehicle. I built a massive graph of the US rail network, accelerated the data pipeline with NVIDIA RAPIDS, and trained a custom Graph Neural Network to predict congestion surges 3 days out. This allowed our routing engine to dynamically switch between road and rail, avoiding bottlenecks and saving millions in potential delay fees."

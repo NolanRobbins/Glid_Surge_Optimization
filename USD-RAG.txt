@@ -1,0 +1,34 @@
+**Project: OSP Budget Justification Automation (RAG Pipeline)**
+
+**The Business Problem**
+The Office of Sponsored Programs (OSP) faced a significant bottleneck in grant proposal preparation. Researchers and administrators were spending hours manually writing budget justifications—narrative explanations for every line item in a grant budget. This process was repetitive, prone to human error, and inconsistent in style and formatting across different proposals. They needed a solution to automate the drafting process while ensuring the output matched the specific tone, format, and compliance requirements of successful past proposals.
+
+**The Solution**
+I designed and deployed a **Feedback-Aware Retrieval-Augmented Generation (RAG) pipeline**. Unlike a standard RAG system that simply retrieves static documents, this solution was built to "learn" from human edits, creating a continuous improvement loop.
+
+**Technical Architecture & Implementation**
+
+1.  **Feedback-Aware Retrieval Engine**
+    *   **Core Logic:** I implemented a custom `FeedbackAwareRetriever` class using `sentence-transformers` (specifically `all-MiniLM-L6-v2`) to generate vector embeddings of budget line items.
+    *   **The "Learning" Mechanism:** The system tracks three versions of every document: the *Input Budget*, the *LLM Draft*, and the *Human-Corrected Final Version*. When a user edits the AI's draft, the system indexes the Human-Corrected version as a new "gold standard." Future retrievals prioritize these corrected examples, ensuring the model adapts to the users' preferred style over time.
+    *   **Smart Chunking:** To handle complex budgets, I implemented a chunking strategy that segments data by Budget Category (e.g., "Travel", "Equipment") or by individual rows, allowing for precise semantic matching rather than generic document-level similarity.
+
+2.  **Generative Workflow (LLM Integration)**
+    *   **Model:** We deployed a local LLM instance (Ollama running `qwen2.5:32b`) to ensure data privacy and control over the inference infrastructure.
+    *   **Prompt Engineering:** I designed a dynamic prompt template that injects:
+        *   The current budget items (filtered for relevant columns to save tokens).
+        *   Top-K similar examples retrieved from the vector store.
+        *   Explicit formatting instructions (Markdown/Docx).
+    *   **Token Optimization:** To manage context window limits, I implemented a hybrid summarization technique. Instead of injecting full 10k-token past documents, the system generates a concise "Budget Summary" and extracts a representative "Style Sample" (~300 tokens) from the retrieved examples. This reduced token usage by ~70% while maintaining high generation quality.
+
+3.  **Robust Data Handling (Filestore-First Pattern)**
+    *   The system handles sensitive financial documents (Excel/Word). I implemented a "Filestore-First" design pattern where files are securely uploaded to MinIO object storage *before* any database records are created. This ensures data integrity and prevents "phantom" database records if file uploads fail.
+    *   The processing pipeline is containerized using Docker, orchestrating the API, Worker, and Database services.
+
+**Key Metrics & Outcome**
+*   **Efficiency:** Drastically reduced the time required to produce a first draft from hours to minutes.
+*   **Quality:** The "Feedback-Aware" component meant that common corrections (e.g., specific phrasing for "Travel" expenses) stopped appearing after just a few iterations, as the model "learned" from the retrieval context.
+*   **Scalability:** The batch processing logic allows the system to handle budgets of any size by splitting them into manageable chunks for the LLM without losing context.
+
+**Summary**
+This project moved beyond simple automation to create an adaptive system. By coupling RAG with a human-in-the-loop feedback mechanism, we turned a static document generation task into a dynamic knowledge management solution that improves itself with every use.
